@@ -49,6 +49,24 @@ public sealed class Lane
         return low;
     }
 
+    /// <summary>
+    /// How far into the lap the line comes closest to a place on the track. That is how a car standing in
+    /// its grid box knows where it joins the line when the lights go out.
+    /// </summary>
+    public float DistanceOf(Vector3 position)
+    {
+        var best = 0;
+        var bestDistance = float.MaxValue;
+        for (var i = 0; i < _points.Length; i++)
+        {
+            var distance = Vector3.DistanceSquared(_points[i].Position, position);
+            if (distance >= bestDistance) continue;
+            bestDistance = distance;
+            best = i;
+        }
+        return _points[best].Distance;
+    }
+
     public LaneSample Sample(float distance)
     {
         var i = IndexAt(distance);

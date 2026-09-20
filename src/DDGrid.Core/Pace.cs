@@ -35,12 +35,16 @@ public sealed class SpeedProfile
     private readonly float[] _speeds;
     private readonly Lane _lane;
 
-    private SpeedProfile(Lane lane, float[] speeds, float lapTimeSeconds)
+    private SpeedProfile(Lane lane, float[] speeds, float lapTimeSeconds, CarLimits limits)
     {
         _lane = lane;
         _speeds = speeds;
         LapTimeSeconds = lapTimeSeconds;
+        Limits = limits;
     }
+
+    /// <summary>What the car this profile belongs to can do; scaled to the lap time it was set to.</summary>
+    public CarLimits Limits { get; }
 
     /// <summary>What driving this profile takes, seconds.</summary>
     public float LapTimeSeconds { get; }
@@ -74,7 +78,7 @@ public sealed class SpeedProfile
             if (average > 0.01f) lapTime += lane[i].Length / average;
         }
 
-        return new SpeedProfile(lane, speeds, lapTime);
+        return new SpeedProfile(lane, speeds, lapTime, limits);
     }
 
     /// <summary>

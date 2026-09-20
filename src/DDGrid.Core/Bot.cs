@@ -3,6 +3,9 @@ using DDGrid.Core.Protocol;
 
 namespace DDGrid.Core;
 
+/// <summary>A lap that is over: what it took, and the time at each sector line.</summary>
+public readonly record struct CompletedLap(uint TimeMs, uint[] Splits);
+
 /// <summary>
 /// One simulated driver on track: how far round the lap it is, how fast, and what the other cars see of
 /// it. It follows the racing line at the speed the profile asks for; everything else — fighting for
@@ -17,6 +20,7 @@ public sealed class Bot
 
     private readonly Lane _lane;
     private readonly SpeedProfile _profile;
+    private readonly uint[] _splits = new uint[3];
     private float _lapTimeSeconds;
     private float _lastSpeed;
 
@@ -26,6 +30,7 @@ public sealed class Bot
         _profile = profile;
         Distance = startDistance;
         Speed = profile.At(startDistance);
+        _lastSpeed = Speed;
     }
 
     /// <summary>How far round the lap, metres.</summary>
@@ -38,14 +43,27 @@ public sealed class Bot
     public int Laps { get; private set; }
 
     /// <summary>
-    /// Drives on. Returns the lap time when the car crossed the line in this step, otherwise null.
+    /// Drives on. Returns the lap when the car crossed the line in this step, otherwise null.
     /// </summary>
-    public uint? Advance(float seconds)
+    public CompletedLap? Advance(float seconds)
     {
         _lastSpeed = Speed;
-        Speed = _profile.At(Distance);
+        // The profile says how fast to be here. A car standing on the grid cannot be that fast yet, so it
+        // works its way up at the rate it accelerates; once it is up to speed the profile is what it drives.
+        var target = _profile.At(Distance);
+        var limits = _profile.Limits;
+        Speed = target > Speed
+            ? MathF.Min(target, Speed + limits.AccelG * 9.81f * seconds)
+            : MathF.Max(target, Speed - limits.BrakeG * 9.81f * seconds);
         var moved = Distance + Speed * seconds;
         _lapTimeSeconds += seconds;
+
+        // Three sectors, as the game has them: the time is taken as the car passes each line.
+        for (var sector = 0; sector < _splits.Length - 1; sector++)
+        {
+            var at = _lane.Length * (sector + 1) / _splits.Length;
+            if (Distance < at && moved >= at) _splits[sector] = Milliseconds(_lapTimeSeconds);
+        }
 
         if (moved < _lane.Length)
         {
@@ -53,13 +71,28 @@ public sealed class Bot
             return null;
         }
 
-        // Over the line: the lap that just ended is worth the time it took.
+        // Over the line: the lap that just ended is worth the time it took, and the last sector with it.
         Distance = moved - _lane.Length;
         Laps++;
-        var lapTime = (uint)MathF.Round(_lapTimeSeconds * 1000);
+        // Every sector time is measured from the line, so the last one is the lap itself.
+        _splits[^1] = Milliseconds(_lapTimeSeconds);
+        var lap = new CompletedLap(_splits[^1], [.. _splits]);
         _lapTimeSeconds = 0;
-        return lapTime;
+        Array.Clear(_splits);
+        return lap;
     }
+
+    /// <summary>Puts the car somewhere on the line and starts a fresh lap from there.</summary>
+    public void StartFrom(float distance)
+    {
+        Distance = _lane.Wrap(distance);
+        Speed = 0;
+        _lastSpeed = 0;
+        _lapTimeSeconds = 0;
+        Array.Clear(_splits);
+    }
+
+    private static uint Milliseconds(float seconds) => (uint)MathF.Round(seconds * 1000);
 
     /// <summary>What the other cars are told about this one.</summary>
     public CarState State()

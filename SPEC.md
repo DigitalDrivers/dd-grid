@@ -43,7 +43,9 @@ CPU core and 150 MB on the server (dd-link README, measured 2026-09-19).
 | --- | --- |
 | Racing line, curve radius, track width, camber, slope | The track's `ai/fast_lane.ai`, which **is** on the race servers. `src/DDGrid.Core/FastLane.cs` reads it. |
 | Grid and pit boxes | The track models, which are **not** on the race servers. Built into a track pack once per track, see §6. |
-| Grid order and race start time | `CurrentSessionUpdate` carries the session, the grid in order, and the start time; `RaceStart` follows (`SessionManager.cs:497-512`). |
+| The session being driven | The handshake says which one is running. After that the server only tells a car when the car **asks**: it sends `SessionRequest` with the session it believes is running, and the server answers `CurrentSessionUpdate` when the two differ (`ACUdpServer.cs:132-137`). The bots ask once a second, as the game does. |
+| Grid order | The `CurrentSessionUpdate` that answers a changed session, in order. Without one — a server with a single race session — the entry list is the order. |
+| When the lights go out | `RaceStart`, carrying the start time and the server's time **both in the car's own clock** (`SessionManager.cs:497-512`), so there is no clock to keep in step: what is left is one subtraction. |
 | Checksums to get in | Computed from the same content the server has: `system/data/surfaces.ini`, the track's `surfaces.ini` and `models.ini`, the track folder, and the car's `data.acd` (`ChecksumManager.cs:62-128`). The server names those files under its own track name, so a server asking for the patch asks for `content/tracks/csp/2651/../<track>/data/surfaces.ini` while reading the plain folder itself — `Checksums.RealPath` undoes that. |
 
 The recorded speed in `fast_lane.ai` is the speed of whatever car recorded the line, not a fast lap — on
@@ -126,12 +128,17 @@ bots look like they are on rails, which is the honest limit of this approach —
 
 ## 8. The race
 
-| Session | What the bots do |
-| --- | --- |
-| Practice | Wait in the pit box, go out, drive laps. |
-| Qualifying | Drive laps at their pace and report them, so the grid order is theirs to earn. |
-| Race | Take the grid box for their place in the order `CurrentSessionUpdate` sends, stand still until the start time, launch after a reaction time, race the laps, report every one. |
-| After the flag | Slow down, drive in, park. |
+| Session | What the bots do | Built |
+| --- | --- | --- |
+| Practice | Go out and drive laps. | yes |
+| Qualifying | Drive laps at their pace and report them, so the grid order is theirs to earn. | yes, same as practice |
+| Race | Take the grid box for their place in the order, stand still until the start time, launch after a reaction time of their own, race the laps, report every one with its sector times. | yes |
+| After the flag | Slow down, drive in, park. | no, phase 2 |
+
+Sector times ride along in the lap packet, the way the game sends them. The separate live `SectorSplit`
+packet is not sent: the server only passes it on and nothing reads it (`ACTcpClient.cs:814-818`).
+
+Waiting in the pit box before going out is not built either. A bot that joins simply drives.
 
 ## 9. The platform
 
@@ -157,7 +164,7 @@ bots look like they are on rails, which is the honest limit of this approach —
 | Phase | What | Done when |
 | --- | --- | --- |
 | 0 **done** | The protocol client, the checksums, the racing line, the speed profile, the names. | `scripts/check.sh` is green: three named bots join a real AssettoServer, it counts every one of their laps, and a bot whose content differs is thrown out. |
-| 1 | Speed profile, grid start, lap and sector reporting, the whole protocol client. | Headless test race, 20 bots, 10 laps: every lap within 0.5 s of the target, no bot off the track, no invalid packet, laps counted by the server. |
+| 1 **done** | Grid start, the race procedure, lap and sector reporting. | A test race of 20 bots over 10 laps: all 200 laps counted by the server, every full lap within 200 ms of the target, nobody off the line, nobody thrown out. |
 | 2 | Following, passing, tow, contact, mistakes, retirements. | Test race against simulated members that brake on purpose: no bot drives into them, positions change hands, a hit bot loses time. |
 | 3 | Platform: columns, preset, sidecar, XP, UI. | e2e: an event with a bot grid runs, and every member gets their XP. |
 | 4 | Tuning against real members on a real track. | A live test race with members. |
@@ -169,6 +176,10 @@ What Phase 0 answered along the way:
   they do that, because `EnableClientMessages` and `EnableUdpClientMessages` are on by default and pull
   the server's minimum CSP version up to 2651.
 - Bot laps arrive as real laps: the server logs them, counts them and puts the cars in order.
+- A car is told about its session only when it asks (§4). A bot that never asks never learns that the
+  race started, and would drive through the countdown.
+- Scaling a car to a lap time scales what it can do everywhere, its acceleration included, so a standing
+  start comes out of the same one number.
 
 ## 11. What this cannot do
 

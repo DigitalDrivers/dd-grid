@@ -32,11 +32,22 @@ public sealed record SessionSnapshot(SessionType Type, string Name, int Laps, in
     public int GridPlaceOf(byte sessionId) => Array.IndexOf(Grid, sessionId);
 }
 
+/// <summary>What a bot needs from its connection. The real one is <see cref="RaceClient"/>.</summary>
+public interface IRaceLink
+{
+    byte SessionId { get; }
+    SessionSnapshot Session { get; }
+    /// <summary>How long until the session starts, or null while the server has not said. Negative once it runs.</summary>
+    long? MillisecondsToStart { get; }
+    void Send(in CarState state);
+    Task CompleteLapAsync(uint lapTimeMs, IReadOnlyList<uint> splits, byte cuts = 0);
+}
+
 /// <summary>
 /// A car on a race server, without a game: the handshake and the checksums over TCP, then the car's
 /// position, its laps and the answers to the server's pings over UDP. To the server this is a driver.
 /// </summary>
-public sealed class RaceClient : IAsyncDisposable
+public sealed class RaceClient : IRaceLink, IAsyncDisposable
 {
     private readonly TcpClient _tcp;
     private readonly UdpClient _udp;
@@ -47,6 +58,8 @@ public sealed class RaceClient : IAsyncDisposable
     private readonly SemaphoreSlim _tcpLock = new(1);
     private byte _sequence;
     private byte _lapCount;
+    private long _startAtTicks;
+    private bool _knowsStart;
 
     private RaceClient(TcpClient tcp, UdpClient udp, byte sessionId, string trackName, string trackConfig)
     {
@@ -66,6 +79,12 @@ public sealed class RaceClient : IAsyncDisposable
     public string TrackConfig { get; }
 
     public SessionSnapshot Session { get; private set; } = SessionSnapshot.Unknown;
+
+    /// <summary>
+    /// How long until the lights go out, in milliseconds, or null while the server has not said. The
+    /// server sends it in the car's own clock, so there is nothing to keep in step.
+    /// </summary>
+    public long? MillisecondsToStart => _knowsStart ? _startAtTicks - Environment.TickCount64 : null;
 
     public event Action<SessionSnapshot>? SessionChanged;
 
@@ -125,10 +144,14 @@ public sealed class RaceClient : IAsyncDisposable
 
         var udp = new UdpClient();
         udp.Connect(options.Host, handshake.UdpPort == 0 ? options.Port : handshake.UdpPort);
-        var client = new RaceClient(tcp, udp, handshake.SessionId, handshake.TrackName, handshake.TrackConfig);
+        var client = new RaceClient(tcp, udp, handshake.SessionId, handshake.TrackName, handshake.TrackConfig)
+        {
+            Session = handshake.Session,
+        };
         await client.AnnounceUdpAsync(cancellationToken);
         client._loops.Add(client.ReadTcpAsync());
         client._loops.Add(client.ReadUdpAsync());
+        client._loops.Add(client.AskForTheSessionAsync());
         return client;
     }
 
@@ -149,13 +172,14 @@ public sealed class RaceClient : IAsyncDisposable
     }
 
     /// <summary>Crosses the line. The server counts the lap, puts the car in the order and tells everyone.</summary>
-    public async Task CompleteLapAsync(uint lapTimeMs, byte cuts = 0)
+    public async Task CompleteLapAsync(uint lapTimeMs, IReadOnlyList<uint> splits, byte cuts = 0)
     {
         var writer = new PacketWriter(_tcpBuffer.AsSpan(2));
         writer.Id(ClientPacket.LapCompleted);
         writer.Value((uint)Environment.TickCount);
         writer.Value(lapTimeMs);
-        writer.Byte(0); // no sector splits
+        writer.Byte((byte)splits.Count);
+        foreach (var split in splits) writer.Value(split);
         writer.Byte(cuts);
         writer.Byte(++_lapCount);
         await SendLockedAsync(writer.Length);
@@ -181,7 +205,7 @@ public sealed class RaceClient : IAsyncDisposable
         _tcpLock.Dispose();
     }
 
-    private readonly record struct Handshake(byte SessionId, ushort UdpPort, string TrackName, string TrackConfig, string[] ChecksumPaths);
+    private readonly record struct Handshake(byte SessionId, ushort UdpPort, string TrackName, string TrackConfig, string[] ChecksumPaths, SessionSnapshot Session);
 
     private static Handshake ReadHandshake(ref PacketReader reader)
     {
@@ -198,8 +222,11 @@ public sealed class RaceClient : IAsyncDisposable
         var sessionId = reader.Byte();
         var sessionCount = reader.Byte();
         reader.Skip(sessionCount * 5);        // every session: type, laps, minutes
-        reader.Utf8();                        // name of the session running
-        reader.Skip(1 + 1 + 2 + 2);           // its id, type, minutes, laps
+        var sessionName = reader.Utf8();      // the session running
+        reader.Byte();                        // its id
+        var sessionType = (SessionType)reader.Byte();
+        var sessionMinutes = reader.Value<ushort>();
+        var sessionLaps = reader.Value<ushort>();
         reader.Skip(4);                       // track grip
         reader.Byte();                        // the slot to spawn in, which is the session id again
         reader.Skip(8);                       // how long the session has been running
@@ -208,7 +235,9 @@ public sealed class RaceClient : IAsyncDisposable
         var paths = new string[checksumCount];
         for (var i = 0; i < checksumCount; i++) paths[i] = reader.Utf8();
 
-        return new Handshake(sessionId, udpPort, trackName, trackConfig, paths);
+        // No grid order here: that comes with a session update, and without one the order is the entry list.
+        return new Handshake(sessionId, udpPort, trackName, trackConfig, paths,
+            new SessionSnapshot(sessionType, sessionName, sessionLaps, sessionMinutes, [], 0));
     }
 
     // UDP has no handshake of its own: the car says which slot it is until the server answers.
@@ -231,6 +260,27 @@ public sealed class RaceClient : IAsyncDisposable
         throw new IOException("The server did not take the car's UDP connection");
     }
 
+    /// <summary>
+    /// The server tells a car about the session only when the car asks with the session it believes is
+    /// running and the two differ. So ask, once a second, the way the game does — otherwise a car never
+    /// learns that the race has started or where it starts from.
+    /// </summary>
+    private async Task AskForTheSessionAsync()
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+        while (!_stop.IsCancellationRequested && await timer.WaitForNextTickAsync(_stop.Token))
+        {
+            try
+            {
+                await _udp.SendAsync(new[] { (byte)ClientPacket.SessionRequest, (byte)Session.Type }, _stop.Token);
+            }
+            catch (Exception)
+            {
+                return;
+            }
+        }
+    }
+
     private async Task ReadUdpAsync()
     {
         while (!_stop.IsCancellationRequested)
@@ -239,6 +289,18 @@ public sealed class RaceClient : IAsyncDisposable
             try { packet = await _udp.ReceiveAsync(_stop.Token); }
             catch (Exception) { return; }
             if (packet.Buffer.Length < 1) continue;
+
+            // How long until the session starts. The server keeps saying until five seconds after it did.
+            if (packet.Buffer[0] == (byte)ServerPacket.RaceStart && packet.Buffer.Length >= 11)
+            {
+                var reader = new PacketReader(packet.Buffer);
+                reader.Byte();
+                var startTime = reader.Value<int>();
+                var serverTime = reader.Value<uint>();
+                _startAtTicks = Environment.TickCount64 + (startTime - (long)serverTime);
+                _knowsStart = true;
+                continue;
+            }
 
             // The server pings once a second and drops a car that stays quiet for fifteen.
             if (packet.Buffer[0] == (byte)ServerPacket.PingUpdate && packet.Buffer.Length >= 5)

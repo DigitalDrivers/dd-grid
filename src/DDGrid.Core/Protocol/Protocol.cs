@@ -9,6 +9,7 @@ public enum ClientPacket : byte
     PositionUpdate = 0x46,
     LapCompleted = 0x49,
     CarConnect = 0x4E,
+    SessionRequest = 0x4F,
     PingPong = 0xF8,
 }
 

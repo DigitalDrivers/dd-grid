@@ -28,9 +28,9 @@ public class BotRaceTests(Xunit.Abstractions.ITestOutputHelper output)
         using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(50));
         while (bot.Laps < laps && await timer.WaitForNextTickAsync(cancellationToken))
         {
-            var lapTime = bot.Advance(0.05f);
+            var lap = bot.Advance(0.05f);
             client.Send(bot.State());
-            if (lapTime.HasValue) await client.CompleteLapAsync(lapTime.Value);
+            if (lap.HasValue) await client.CompleteLapAsync(lap.Value.TimeMs, lap.Value.Splits);
         }
     }
 
