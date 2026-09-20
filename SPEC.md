@@ -75,8 +75,10 @@ Two ways out; **A is the decision**:
 
 Decided 2026-09-20: A. B stays on the table for when bot races become a fixture.
 
-Bot GUIDs are deliberately not SteamIDs: `1000 + n`. Anything below 76561197960265728 is not a Steam
-account, so the platform can tell a simulated driver from a member by the number alone.
+Bot GUIDs are deliberately not SteamIDs: `10000000000000000 + n`. Anything below 76561197960265728 is not
+a Steam account, so the platform can tell a simulated driver from a member by the number alone — and they
+are seventeen digits long all the same, because that is what the game and every message about a race
+expect of a driver's id.
 
 ## 6. Track packs — done
 
@@ -170,7 +172,8 @@ Waiting in the pit box before going out is not built either. A bot that joins si
 - **race-control**: when the preset holds a `dd-grid.json`, start a second container next to the race
   server (`engine.ts` already builds the race container this way) with `NetworkMode:
   container:dd-race-<id>`, so the bots reach the server on `127.0.0.1` and no port is opened; content
-  mounted read-only, as the race server has it.
+  mounted read-only, as the race server has it. dd-grid waits for the server to come up, so the order the
+  two start in does not matter, and the track packs ship inside its image.
 - **result**: a race with a bot grid is not an official race. It gives XP and nothing else — the rule
   the offline bot races already follow (`progression-db.ts:77-81`). The ingest writes one `bot_races` row
   per member instead of an official result, and `loadOfficialRaces` skips those events. The table already

@@ -65,9 +65,10 @@ public static class Roster
 
     /// <summary>
     /// The GUID of the nth simulated driver. Deliberately far below the smallest SteamID, so that
-    /// everything that reads a result can tell a bot from a member by the number alone.
+    /// everything that reads a result can tell a bot from a member by the number alone — and seventeen
+    /// digits long all the same, because that is what the game and the platform expect of a driver's id.
     /// </summary>
-    public const ulong GuidBase = 1000;
+    public const ulong GuidBase = 10_000_000_000_000_000;
 
     /// <summary>The smallest number Steam hands out; below it nobody is a person.</summary>
     public const ulong SmallestSteamId = 76561197960265728;

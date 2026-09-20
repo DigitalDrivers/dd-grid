@@ -17,6 +17,7 @@ race control, live timing, the classification and the result need no change to s
 | `data/tracks/` | The track packs, one per track and layout. |
 | `tests/DDGrid.Core.Tests/` | xUnit; tests marked `[GameFact]` skip themselves without the game. |
 | `tests/DDGrid.RaceTests/` | Bots racing a real AssettoServer, checksums and all. |
+| `Dockerfile` | The image race control starts beside a race server. |
 | `SPEC.md` | What is being built, what is proven, and in what order. |
 
 ## Build and test
@@ -25,6 +26,22 @@ Requires the .NET 9 SDK.
 
 ```bash
 scripts/check.sh
+```
+
+## Putting a field on a server
+
+With the config the platform writes beside a race server's preset:
+
+```bash
+dotnet run --project tools/DDGrid.Drive -- --config /data/presets/<race>/dd-grid.json
+```
+
+By hand, without the platform:
+
+```bash
+dotnet run --project tools/DDGrid.Drive -- --track ks_nurburgring --layout layout_gp_a \
+    --car ks_porsche_911_gt3_cup_2017 --server-root /path/to/server --port 9610 \
+    --bots 8 --lap-seconds 118 --track-packs data/tracks
 ```
 
 ## Track packs
