@@ -1,3 +1,4 @@
+using System.Net.Sockets;
 using DDGrid.Core;
 using DDGrid.Core.Protocol;
 
@@ -14,25 +15,41 @@ using DDGrid.Core.Protocol;
 var values = new Dictionary<string, string>();
 for (var i = 0; i + 1 < args.Length; i += 2) values[args[i].TrimStart('-')] = args[i + 1];
 
-var config = values.TryGetValue("config", out var configPath) ? GridConfig.Read(configPath) : null;
-string Required(string name) => values.TryGetValue(name, out var value) ? value
-    : throw new ArgumentException($"--{name} is missing (or use --config)");
-
-config = new GridConfig
+GridConfig config;
+try
 {
-    Host = values.GetValueOrDefault("host", config?.Host ?? "127.0.0.1"),
-    Port = values.TryGetValue("port", out var port) ? int.Parse(port) : config?.Port ?? 9600,
-    ServerRoot = values.GetValueOrDefault("server-root", config?.ServerRoot ?? "/data"),
-    Track = values.GetValueOrDefault("track", config?.Track ?? Required("track")),
-    Layout = values.GetValueOrDefault("layout", config?.Layout ?? ""),
-    Car = values.GetValueOrDefault("car", config?.Car ?? Required("car")),
-    Skins = config?.Skins ?? [],
-    Bots = values.TryGetValue("bots", out var howMany) ? int.Parse(howMany) : config?.Bots ?? 0,
-    Level = values.TryGetValue("level", out var level) ? int.Parse(level) : config?.Level ?? 95,
-    LapSeconds = values.TryGetValue("lap-seconds", out var lap) ? float.Parse(lap) : config?.LapSeconds,
-    Seed = values.TryGetValue("seed", out var seed) ? int.Parse(seed) : config?.Seed ?? 1,
-    WaitSeconds = values.TryGetValue("wait-seconds", out var wait) ? int.Parse(wait) : config?.WaitSeconds ?? 180,
-};
+    config = Configure();
+}
+catch (Exception error) when (error is ArgumentException or IOException or System.Text.Json.JsonException)
+{
+    // Started wrong: say what is missing, not where in the code it was noticed.
+    Console.Error.WriteLine(error.Message);
+    Console.Error.WriteLine("usage: --config <file>, or --track <id> --car <model> --server-root <folder> --port <n> --bots <n>");
+    return 2;
+}
+
+GridConfig Configure()
+{
+    var given = values.TryGetValue("config", out var configPath) ? GridConfig.Read(configPath) : null;
+    string Required(string name) => values.TryGetValue(name, out var value) ? value
+        : throw new ArgumentException($"--{name} is missing (or use --config)");
+
+    return new GridConfig
+    {
+        Host = values.GetValueOrDefault("host", given?.Host ?? "127.0.0.1"),
+        Port = values.TryGetValue("port", out var port) ? int.Parse(port) : given?.Port ?? 9600,
+        ServerRoot = values.GetValueOrDefault("server-root", given?.ServerRoot ?? "/data"),
+        Track = values.GetValueOrDefault("track", given?.Track ?? Required("track")),
+        Layout = values.GetValueOrDefault("layout", given?.Layout ?? ""),
+        Car = values.GetValueOrDefault("car", given?.Car ?? Required("car")),
+        Skins = given?.Skins ?? [],
+        Bots = values.TryGetValue("bots", out var howMany) ? int.Parse(howMany) : given?.Bots ?? 0,
+        Level = values.TryGetValue("level", out var level) ? int.Parse(level) : given?.Level ?? 95,
+        LapSeconds = values.TryGetValue("lap-seconds", out var lap) ? float.Parse(lap) : given?.LapSeconds,
+        Seed = values.TryGetValue("seed", out var seed) ? int.Parse(seed) : given?.Seed ?? 1,
+        WaitSeconds = values.TryGetValue("wait-seconds", out var wait) ? int.Parse(wait) : given?.WaitSeconds ?? 180,
+    };
+}
 
 // The track packs ship with dd-grid: a track's grid boxes are not on the race server.
 var packs = values.GetValueOrDefault("track-packs", Path.Combine(AppContext.BaseDirectory, "data", "tracks"));
@@ -108,7 +125,9 @@ Console.WriteLine("leaving");
 foreach (var client in clients) await client.DisposeAsync();
 return 0;
 
-// The race server may still be starting when dd-grid does, so the first car keeps knocking.
+// The race server may still be starting when dd-grid does, so a car keeps knocking while nothing
+// answers. A server that answers and says no — no slot for this driver, or the wrong content — has
+// made up its mind, and knocking again will not change it.
 static async Task<RaceClient> JoinAsync(RaceClientOptions options, int waitSeconds, CancellationToken token)
 {
     var until = DateTime.UtcNow.AddSeconds(waitSeconds);
@@ -118,7 +137,7 @@ static async Task<RaceClient> JoinAsync(RaceClientOptions options, int waitSecon
         {
             return await RaceClient.JoinAsync(options, token);
         }
-        catch (Exception error) when (DateTime.UtcNow < until && !token.IsCancellationRequested)
+        catch (Exception error) when (error is SocketException or IOException && DateTime.UtcNow < until && !token.IsCancellationRequested)
         {
             Console.WriteLine($"waiting for the race server: {error.Message}");
             await Task.Delay(TimeSpan.FromSeconds(2), token);
