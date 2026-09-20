@@ -179,11 +179,15 @@ What looking at it in the game found (2026-09-20, eight bots on the Nürburgring
 field):
 
 - The cars floated about a metre over the grid. A track's `AC_START` markers stand above the road and the
-  game drops a car onto it; a bot has to be put on the surface itself.
+  game drops a car onto it; a bot has to be put on the surface itself — and a centimetre above it, because
+  the racing line was recorded with the suspension loaded.
 - They pulled away from their boxes in single file, because the start put them on the line at the box's
   distance and threw the offset away.
 - They drove straight into a car parked on the racing line: a bot cannot see another car yet. Phase 2.
-- They lapped 1.3 % slower than they were set to, which is where the measured lap time came from.
+- They lapped 1.3 % slower than they were set to, which is where the measured lap time came from. With
+  that in, a bot set to 1:58.000 drove 1:58.003 on the Nürburgring, and one set to 2:01.300 drove 2:01.253.
+  The lap right after a standing start is two to three seconds slower, because the car is still picking up
+  speed as it crosses the line for the first time — as a real one is.
 
 What Phase 0 answered along the way:
 

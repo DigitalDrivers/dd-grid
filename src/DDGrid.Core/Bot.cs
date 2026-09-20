@@ -23,6 +23,12 @@ public sealed class Bot
     /// <summary>How far a car takes to come across onto the line after a start from its box.</summary>
     private const float MergeMeters = 180f;
 
+    /// <summary>
+    /// A centimetre of air under the car. The racing line was recorded while driving, with the suspension
+    /// loaded, so a car put exactly on it sits a touch into the road.
+    /// </summary>
+    private const float RideHeightMeters = 0.01f;
+
     private readonly uint[] _splits = new uint[3];
     private float _lapTimeSeconds;
     private float _lastSpeed;
@@ -129,6 +135,7 @@ public sealed class Bot
         var position = offset == 0
             ? sample.Position
             : sample.Position + Vector3.Normalize(Vector3.Cross(sample.Normal, sample.Forward)) * offset;
+        position.Y += RideHeightMeters;
 
         return new CarState
         {
@@ -148,5 +155,6 @@ public sealed class Bot
 
     /// <summary>Puts the car on its grid box, facing the way the box does, standing still.</summary>
     public static CarState OnGrid(TrackSlot box) =>
-        CarState.Still(box.Position, CarState.Facing(new Vector3(MathF.Sin(box.HeadingRad), 0, MathF.Cos(box.HeadingRad)), 0f));
+        CarState.Still(box.Position with { Y = box.Position.Y + RideHeightMeters },
+            CarState.Facing(new Vector3(MathF.Sin(box.HeadingRad), 0, MathF.Cos(box.HeadingRad)), 0f));
 }

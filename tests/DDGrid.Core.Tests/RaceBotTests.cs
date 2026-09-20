@@ -47,7 +47,7 @@ public class RaceBotTests
 
         Assert.Equal(RacePhase.OnGrid, bot.Phase);
         Assert.Equal(1, bot.GridPlace);
-        Assert.All(link.Sent, state => Assert.Equal(new Vector3(3, 0, 984), state.Position));
+        Assert.All(link.Sent, state => Assert.Equal(new Vector3(3, 0.01f, 984), state.Position));
         Assert.All(link.Sent, state => Assert.Equal(Vector3.Zero, state.Velocity));
         Assert.Empty(link.Laps);
     }
@@ -62,19 +62,20 @@ public class RaceBotTests
         await bot.TickAsync(0.05f);
 
         Assert.Equal(0, bot.GridPlace);
-        Assert.Equal(new Vector3(-3, 0, 990), link.Sent[0].Position);
+        Assert.Equal(new Vector3(-3, 0.01f, 990), link.Sent[0].Position);
     }
 
     [Fact]
     public async Task puts_the_car_on_the_road_and_not_above_it()
     {
         // The markers of a real track stand about a metre up; the game drops a car onto the surface.
+        // A centimetre of air is left under it, because the line was recorded with the suspension loaded.
         var link = new FakeLink { SessionId = 0, Session = Race(0), MillisecondsToStart = 5000 };
         var bot = new RaceBot(link, Straight(), SpeedProfile.ForLapTime(Straight(), CarLimits.Nominal, 30f), Grid());
 
         await bot.TickAsync(0.05f);
 
-        Assert.Equal(0f, link.Sent[^1].Position.Y);
+        Assert.InRange(link.Sent[^1].Position.Y, 0.001f, 0.05f);
     }
 
     [Fact]
@@ -169,6 +170,6 @@ public class RaceBotTests
         await bot.TickAsync(0.05f);
 
         Assert.Equal(RacePhase.OnGrid, bot.Phase);
-        Assert.Equal(new Vector3(-3, 0, 990), link.Sent[^1].Position);
+        Assert.Equal(new Vector3(-3, 0.01f, 990), link.Sent[^1].Position);
     }
 }

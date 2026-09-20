@@ -74,6 +74,25 @@ public class PaceTests
     }
 
     [GameFact]
+    public void drives_the_lap_time_it_was_set_to_round_a_real_track()
+    {
+        var lane = new Lane(FastLane.ReadFile(Path.Combine(GameFactAttribute.Path, "content/tracks/ks_nurburgring/layout_gp_a/ai/fast_lane.ai")));
+        var profile = SpeedProfile.ForLapTime(lane, CarLimits.Nominal, 118f);
+
+        // Three laps one after another, driven the way the bots drive them.
+        var bot = new Bot(lane, profile);
+        var laps = new List<uint>();
+        for (var step = 0; step < 20_000 && laps.Count < 3; step++)
+        {
+            var lap = bot.Advance(SpeedProfile.StepSeconds);
+            if (lap.HasValue) laps.Add(lap.Value.TimeMs);
+        }
+
+        Assert.Equal(118f, profile.LapTimeSeconds, 0.05f);
+        Assert.All(laps, lap => Assert.InRange(lap, 117_800u, 118_200u));
+    }
+
+    [GameFact]
     public void puts_a_real_car_round_a_real_track_in_a_believable_time()
     {
         var lane = new Lane(FastLane.ReadFile(Path.Combine(GameFactAttribute.Path, "content/tracks/ks_nurburgring/layout_gp_a/ai/fast_lane.ai")));
