@@ -40,9 +40,14 @@ public class FullGridTests(Xunit.Abstractions.ITestOutputHelper output)
         return boxes;
     }
 
-    /// <summary>Watches every position a bot sends, so a bot that leaves the track cannot go unnoticed.</summary>
+    /// <summary>
+    /// Watches every position a bot sends, so a bot that leaves the track cannot go unnoticed. A car
+    /// coming across from its grid box is beside the line on purpose, so what is measured is the distance
+    /// from where the bot means to be.
+    /// </summary>
     private sealed class OnTrack(IRaceLink inner, Lane lane) : IRaceLink
     {
+        public RaceBot? Watched { get; set; }
         public float WorstDeviation { get; private set; }
         public List<uint> Laps { get; } = [];
 
@@ -56,7 +61,9 @@ public class FullGridTests(Xunit.Abstractions.ITestOutputHelper output)
             if (state.Velocity.LengthSquared() > 1)
             {
                 var sample = lane.Sample(lane.DistanceOf(state.Position));
-                WorstDeviation = MathF.Max(WorstDeviation, Vector3.Distance(sample.Position, state.Position));
+                var across = Vector3.Normalize(Vector3.Cross(sample.Normal, sample.Forward));
+                var meant = sample.Position + across * (Watched?.Bot.LateralOffset ?? 0);
+                WorstDeviation = MathF.Max(WorstDeviation, Vector3.Distance(meant, state.Position));
             }
             inner.Send(state);
         }
@@ -98,7 +105,9 @@ public class FullGridTests(Xunit.Abstractions.ITestOutputHelper output)
                 clients.Add(client);
                 var watcher = new OnTrack(client, lane);
                 watchers.Add(watcher);
-                bots.Add(new RaceBot(watcher, lane, profile, grid, reactionSeconds: 0.2f + i * 0.01f));
+                var bot = new RaceBot(watcher, lane, profile, grid, reactionSeconds: 0.2f + i * 0.01f);
+                watcher.Watched = bot;
+                bots.Add(bot);
             }
 
             // Everyone is in, the lights are still red: every car stands in a box of its own.
@@ -128,12 +137,13 @@ public class FullGridTests(Xunit.Abstractions.ITestOutputHelper output)
         // grid, a few car lengths behind the line, exactly as a driver's does.
         var full = watchers.SelectMany(w => w.Laps.Skip(1)).ToList();
         Assert.Equal(Cars * (Laps - 1), full.Count);
-        Assert.All(full, lap => Assert.InRange(lap, (uint)(LapSeconds * 1000 - 500), (uint)(LapSeconds * 1000 + 500)));
+        Assert.All(full, lap => Assert.InRange(lap, (uint)(LapSeconds * 1000 - 250), (uint)(LapSeconds * 1000 + 250)));
 
-        // Nobody wandered off the racing line.
+        // Nobody wandered off the line it meant to be on.
         Assert.All(watchers, watcher => Assert.True(watcher.WorstDeviation < 1f, $"{watcher.WorstDeviation:F2} m off the line"));
 
         output.WriteLine($"{Cars} cars, {Laps} laps each: {server.Log.Split("Lap completed by").Length - 1} laps counted by the server");
         output.WriteLine($"full laps {full.Min()} - {full.Max()} ms (set to {LapSeconds * 1000}), worst line deviation {watchers.Max(w => w.WorstDeviation):F3} m");
+        output.WriteLine($"grid places {string.Join(" ", bots.Select(b => b.GridPlace))}");
     }
 }

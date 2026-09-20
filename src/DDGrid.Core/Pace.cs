@@ -32,22 +32,28 @@ public sealed class SpeedProfile
     /// <summary>A straight has a radius in the millions; past this it is a straight.</summary>
     private const float RadiusCapMeters = 2000f;
 
+    /// <summary>The step the bots drive in: a lap time is only true for the rate it was driven at.</summary>
+    public const float StepSeconds = 0.05f;
+
     private readonly float[] _speeds;
     private readonly Lane _lane;
 
-    private SpeedProfile(Lane lane, float[] speeds, float lapTimeSeconds, CarLimits limits)
+    private SpeedProfile(Lane lane, float[] speeds, CarLimits limits)
     {
         _lane = lane;
         _speeds = speeds;
-        LapTimeSeconds = lapTimeSeconds;
         Limits = limits;
     }
 
     /// <summary>What the car this profile belongs to can do; scaled to the lap time it was set to.</summary>
     public CarLimits Limits { get; }
 
-    /// <summary>What driving this profile takes, seconds.</summary>
-    public float LapTimeSeconds { get; }
+    /// <summary>
+    /// What driving this profile really takes, seconds: measured by driving a lap of it in the steps the
+    /// bots drive in, not worked out from the speeds. A car cannot change speed between two steps and does
+    /// not accelerate faster than it can, and over a lap that adds up to more than a second.
+    /// </summary>
+    public float LapTimeSeconds { get; private set; }
 
     public static SpeedProfile For(Lane lane, CarLimits limits)
     {
@@ -71,33 +77,41 @@ public sealed class SpeedProfile
             }
         }
 
-        var lapTime = 0f;
-        for (var i = 0; i < speeds.Length; i++)
-        {
-            var average = (speeds[i] + speeds[(i + 1) % speeds.Length]) / 2;
-            if (average > 0.01f) lapTime += lane[i].Length / average;
-        }
-
-        return new SpeedProfile(lane, speeds, lapTime, limits);
+        var profile = new SpeedProfile(lane, speeds, limits);
+        profile.LapTimeSeconds = profile.MeasureLap();
+        return profile;
     }
 
     /// <summary>
     /// The profile that takes a given lap time. Scaling the limits by <c>s</c> divides the lap time by the
-    /// root of <c>s</c> everywhere at once, so the factor follows straight from one try; a second try
-    /// catches what rounding left.
+    /// root of <c>s</c> everywhere at once, so one try lands close; the tries after that measure what the
+    /// car really does and take out what stepping and acceleration cost it.
     /// </summary>
     public static SpeedProfile ForLapTime(Lane lane, CarLimits limits, float targetSeconds)
     {
         if (targetSeconds <= 0) throw new ArgumentOutOfRangeException(nameof(targetSeconds));
 
         var profile = For(lane, limits);
-        for (var attempt = 0; attempt < 2; attempt++)
+        for (var attempt = 0; attempt < 4; attempt++)
         {
             var factor = profile.LapTimeSeconds / targetSeconds;
+            if (MathF.Abs(factor - 1) < 0.0002f) break;
             limits = limits.Scaled(factor * factor);
             profile = For(lane, limits);
         }
         return profile;
+    }
+
+    /// <summary>One flying lap, driven the way a bot drives it.</summary>
+    private float MeasureLap()
+    {
+        var bot = new Bot(_lane, this);
+        for (var step = 0; step < 100_000; step++)
+        {
+            var lap = bot.Advance(StepSeconds);
+            if (lap.HasValue) return lap.Value.TimeMs / 1000f;
+        }
+        throw new InvalidOperationException("A lap of this profile never ends");
     }
 
     /// <summary>How fast to be at this distance into the lap, metres a second.</summary>

@@ -20,9 +20,14 @@ public sealed class Bot
 
     private readonly Lane _lane;
     private readonly SpeedProfile _profile;
+    /// <summary>How far a car takes to come across onto the line after a start from its box.</summary>
+    private const float MergeMeters = 180f;
+
     private readonly uint[] _splits = new uint[3];
     private float _lapTimeSeconds;
     private float _lastSpeed;
+    private float _offsetMeters;
+    private float _offsetFadeLeft;
 
     public Bot(Lane lane, SpeedProfile profile, float startDistance = 0f)
     {
@@ -57,6 +62,7 @@ public sealed class Bot
             : MathF.Max(target, Speed - limits.BrakeG * 9.81f * seconds);
         var moved = Distance + Speed * seconds;
         _lapTimeSeconds += seconds;
+        if (_offsetFadeLeft > 0) _offsetFadeLeft = MathF.Max(0, _offsetFadeLeft - Speed * seconds);
 
         // Three sectors, as the game has them: the time is taken as the car passes each line.
         for (var sector = 0; sector < _splits.Length - 1; sector++)
@@ -82,15 +88,29 @@ public sealed class Bot
         return lap;
     }
 
-    /// <summary>Puts the car somewhere on the line and starts a fresh lap from there.</summary>
-    public void StartFrom(float distance)
+    /// <summary>
+    /// Puts the car somewhere on the line and starts a fresh lap from there. A race of its own starts at
+    /// nought laps: the count belongs to the race, not to the car.
+    /// </summary>
+    /// <param name="lateralOffset">
+    /// How far beside the line it starts, metres, positive to the left. A car starting from its grid box
+    /// stands beside the line and comes across onto it over the first stretch, instead of appearing on it
+    /// the moment the lights go out.
+    /// </param>
+    public void StartFrom(float distance, float lateralOffset = 0f)
     {
         Distance = _lane.Wrap(distance);
         Speed = 0;
         _lastSpeed = 0;
+        Laps = 0;
         _lapTimeSeconds = 0;
+        _offsetMeters = lateralOffset;
+        _offsetFadeLeft = MergeMeters;
         Array.Clear(_splits);
     }
+
+    /// <summary>How far beside the line the car is right now, metres.</summary>
+    public float LateralOffset => _offsetFadeLeft <= 0 ? 0 : _offsetMeters * (_offsetFadeLeft / MergeMeters);
 
     private static uint Milliseconds(float seconds) => (uint)MathF.Round(seconds * 1000);
 
@@ -104,9 +124,15 @@ public sealed class Bot
         // Inside a gear the engine runs up from idle to its limit and drops back at the change.
         var inGear = Speed / 12f - (gear - 1);
 
+        // Beside the line while it is still coming across from its grid box.
+        var offset = LateralOffset;
+        var position = offset == 0
+            ? sample.Position
+            : sample.Position + Vector3.Normalize(Vector3.Cross(sample.Normal, sample.Forward)) * offset;
+
         return new CarState
         {
-            Position = sample.Position,
+            Position = position,
             Rotation = CarState.Facing(sample.Forward, 0f),
             Velocity = sample.Forward * Speed,
             TyreAngularSpeed = CarState.WheelSpeed(Speed, TyreDiameterMeters),

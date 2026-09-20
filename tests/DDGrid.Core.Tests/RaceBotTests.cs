@@ -28,9 +28,12 @@ public class RaceBotTests
     private static Lane Straight(int length = 1000) => new([.. Enumerable.Range(0, length).Select(i =>
         new LanePoint(new Vector3(0, 0, i), i, 1f, 3000f, 5f, 5f, new Vector3(0, 0, 1), new Vector3(0, 1, 0), 0f, 0f))]);
 
-    /// <summary>Boxes behind the line, in two columns, the way a track has them.</summary>
+    /// <summary>
+    /// Boxes behind the line, in two columns, the way a track has them — and a metre above the road,
+    /// the way a track marks them.
+    /// </summary>
     private static TrackSlot[] Grid(int count = 4) => [.. Enumerable.Range(0, count).Select(i =>
-        new TrackSlot(i, new Vector3(i % 2 == 0 ? -3 : 3, 0, 990 - i * 6), 0f))];
+        new TrackSlot(i, new Vector3(i % 2 == 0 ? -3 : 3, 1, 990 - i * 6), 0f))];
 
     private static SessionSnapshot Race(params byte[] grid) => new(SessionType.Race, "Race", 3, 0, grid, 0);
 
@@ -60,6 +63,37 @@ public class RaceBotTests
 
         Assert.Equal(0, bot.GridPlace);
         Assert.Equal(new Vector3(-3, 0, 990), link.Sent[0].Position);
+    }
+
+    [Fact]
+    public async Task puts_the_car_on_the_road_and_not_above_it()
+    {
+        // The markers of a real track stand about a metre up; the game drops a car onto the surface.
+        var link = new FakeLink { SessionId = 0, Session = Race(0), MillisecondsToStart = 5000 };
+        var bot = new RaceBot(link, Straight(), SpeedProfile.ForLapTime(Straight(), CarLimits.Nominal, 30f), Grid());
+
+        await bot.TickAsync(0.05f);
+
+        Assert.Equal(0f, link.Sent[^1].Position.Y);
+    }
+
+    [Fact]
+    public async Task pulls_away_from_its_box_and_comes_across_onto_the_line()
+    {
+        var lane = Straight();
+        var link = new FakeLink { SessionId = 1, Session = Race(0, 1), MillisecondsToStart = 100 };
+        var bot = new RaceBot(link, lane, SpeedProfile.ForLapTime(lane, CarLimits.Nominal, 15f), Grid(), reactionSeconds: 0f);
+        await bot.TickAsync(0.05f);
+        Assert.Equal(3f, link.Sent[^1].Position.X); // box 1, the right-hand column
+
+        link.MillisecondsToStart = -10;
+        // Just under way: still out beside the line, not on it.
+        for (var i = 0; i < 20; i++) await bot.TickAsync(0.05f);
+        Assert.InRange(link.Sent[^1].Position.X, 2.5f, 3.01f);
+
+        // A few hundred metres on it has come across.
+        for (var i = 0; i < 200; i++) await bot.TickAsync(0.05f);
+        Assert.Equal(0f, link.Sent[^1].Position.X, 0.01f);
     }
 
     [Fact]
@@ -99,6 +133,24 @@ public class RaceBotTests
         Assert.Equal(3, lap.Splits.Length);
         Assert.True(lap.Splits[0] < lap.Splits[1] && lap.Splits[1] < lap.Splits[2], $"sectors {string.Join(", ", lap.Splits)}");
         Assert.Equal(lap.Time, lap.Splits[^1]);
+    }
+
+    [Fact]
+    public async Task starts_the_next_race_at_nought_laps()
+    {
+        var lane = Straight();
+        var link = new FakeLink { SessionId = 0, Session = Race(0), MillisecondsToStart = -1 };
+        var bot = new RaceBot(link, lane, SpeedProfile.ForLapTime(lane, CarLimits.Nominal, 15f), Grid(), reactionSeconds: 0f);
+
+        for (var i = 0; i < 600; i++) await bot.TickAsync(0.05f);
+        Assert.True(bot.Bot.Laps > 0, "it never finished a lap");
+
+        // The race is over and the next countdown starts: it lines up again and its laps are its own.
+        link.MillisecondsToStart = 5000;
+        await bot.TickAsync(0.05f);
+
+        Assert.Equal(RacePhase.OnGrid, bot.Phase);
+        Assert.Equal(0, bot.Bot.Laps);
     }
 
     [Fact]

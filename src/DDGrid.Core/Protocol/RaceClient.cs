@@ -349,6 +349,8 @@ public sealed class RaceClient : IRaceLink, IAsyncDisposable
         for (var i = 0; i < grid.Length; i++) grid[i] = reader.Byte();
         var startTime = reader.Value<long>();
 
+        // Laps are numbered within their session, so a new one starts at one again.
+        if (Session.Name != name || Session.Type != type) _lapCount = 0;
         Session = new SessionSnapshot(type, name, laps, minutes, grid, startTime);
         SessionChanged?.Invoke(Session);
     }

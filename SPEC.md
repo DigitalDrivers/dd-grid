@@ -42,7 +42,7 @@ CPU core and 150 MB on the server (dd-link README, measured 2026-09-19).
 | Needed | Where it comes from |
 | --- | --- |
 | Racing line, curve radius, track width, camber, slope | The track's `ai/fast_lane.ai`, which **is** on the race servers. `src/DDGrid.Core/FastLane.cs` reads it. |
-| Grid and pit boxes | The track models, which are **not** on the race servers. Built into a track pack once per track, see §6. |
+| Grid and pit boxes | The track models, which are **not** on the race servers. Built into a track pack once per track, see §6. A track marks them about a metre **above** the road and the game drops a car onto the surface; a bot has no physics to fall with, so it takes its height from the racing line, which was recorded where a driving car sits. |
 | The session being driven | The handshake says which one is running. After that the server only tells a car when the car **asks**: it sends `SessionRequest` with the session it believes is running, and the server answers `CurrentSessionUpdate` when the two differ (`ACUdpServer.cs:132-137`). The bots ask once a second, as the game does. |
 | Grid order | The `CurrentSessionUpdate` that answers a changed session, in order. Without one — a server with a single race session — the entry list is the order. |
 | When the lights go out | `RaceStart`, carrying the start time and the server's time **both in the car's own clock** (`SessionManager.cs:497-512`), so there is no clock to keep in step: what is left is one subtraction. |
@@ -103,14 +103,20 @@ workflow.
    millions, so it is capped before the root.
 2. A pass backwards through the lap applies the braking limit, a pass forwards the acceleration limit;
    twice around, because the lap is a loop.
-3. The lap time that follows is `Σ length(i) / v(i)`. Scaling all three limits by `s` scales the lap time
-   by `1/sqrt(s)`, so the `s` that hits a wanted lap time is `(simulated / target)²` — no search needed.
+3. That gives the shape. What it costs is then **measured** by driving a lap of it in the same 50 ms steps
+   the bots drive in: a car cannot change speed between two steps and cannot accelerate faster than it can,
+   and over a lap of the Nürburgring that adds up to 1.6 s — 1.3 % — of quiet error. Scaling all three
+   limits by `s` scales the lap time by `1/sqrt(s)`, so each round of measuring lands the next one closer.
 
 So a bot is one number: the lap time it should drive. The platform knows what members drive on that track
 in that car, so a field can be set to "a second off pole" instead of a made-up percentage, and the `aiLevel`
 of the existing bot races maps onto it: `target = reference * 100 / aiLevel`.
 
 Per bot on top of that: a spread over the field, a little noise per lap, and a small chance of a mistake.
+
+**The start.** A car stands in its box, which is beside the line, and comes across onto it over the first
+180 m. Without that the whole field snaps onto the racing line the moment the lights go out and drives away
+in single file.
 
 **Driving.** The bot holds a distance along the line and an offset across it. Every tick it moves to its
 target speed within the limits, moves its offset towards where it wants to be, and sends position,
@@ -164,10 +170,20 @@ Waiting in the pit box before going out is not built either. A bot that joins si
 | Phase | What | Done when |
 | --- | --- | --- |
 | 0 **done** | The protocol client, the checksums, the racing line, the speed profile, the names. | `scripts/check.sh` is green: three named bots join a real AssettoServer, it counts every one of their laps, and a bot whose content differs is thrown out. |
-| 1 **done** | Grid start, the race procedure, lap and sector reporting. | A test race of 20 bots over 10 laps: all 200 laps counted by the server, every full lap within 200 ms of the target, nobody off the line, nobody thrown out. |
+| 1 **done** | Grid start, the race procedure, lap and sector reporting. | A test race of 20 bots over 10 laps: all 200 laps counted by the server, every full lap within 250 ms of the target, nobody off the line they meant to be on, nobody thrown out. Seen in the game on a real server: the field in its grid boxes, the names and flags in the entry list, the standings with real gaps, 2:01 laps of the Nürburgring in a 911 Cup. |
 | 2 | Following, passing, tow, contact, mistakes, retirements. | Test race against simulated members that brake on purpose: no bot drives into them, positions change hands, a hit bot loses time. |
 | 3 | Platform: columns, preset, sidecar, XP, UI. | e2e: an event with a bot grid runs, and every member gets their XP. |
 | 4 | Tuning against real members on a real track. | A live test race with members. |
+
+What looking at it in the game found (2026-09-20, eight bots on the Nürburgring GP, a real client in the
+field):
+
+- The cars floated about a metre over the grid. A track's `AC_START` markers stand above the road and the
+  game drops a car onto it; a bot has to be put on the surface itself.
+- They pulled away from their boxes in single file, because the start put them on the line at the box's
+  distance and threw the offset away.
+- They drove straight into a car parked on the racing line: a bot cannot see another car yet. Phase 2.
+- They lapped 1.3 % slower than they were set to, which is where the measured lap time came from.
 
 What Phase 0 answered along the way:
 

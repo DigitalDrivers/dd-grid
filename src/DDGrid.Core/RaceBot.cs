@@ -1,3 +1,4 @@
+using System.Numerics;
 using DDGrid.Core.Protocol;
 
 namespace DDGrid.Core;
@@ -95,7 +96,17 @@ public sealed class RaceBot
         if (!entering && place == GridPlace) return;
 
         GridPlace = place;
-        _box = _grid[place];
-        Bot.StartFrom(_lane.DistanceOf(_box.Value.Position));
+
+        // A track puts its grid markers about a metre above the road; the game drops a car onto the
+        // surface, a bot has to be put there. The racing line is recorded where a driving car sits, so
+        // its height at this point is the right one.
+        var box = _grid[place];
+        var distance = _lane.DistanceOf(box.Position);
+        var sample = _lane.Sample(distance);
+        _box = box with { Position = new Vector3(box.Position.X, sample.Position.Y, box.Position.Z) };
+
+        // Start beside the line, where the box is, and come across onto it over the first stretch.
+        var across = Vector3.Normalize(Vector3.Cross(sample.Normal, sample.Forward));
+        Bot.StartFrom(distance, Vector3.Dot(_box.Value.Position - sample.Position, across));
     }
 }
