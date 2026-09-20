@@ -17,6 +17,8 @@ public class RaceBotTests
 
         public void Send(in CarState state) => Sent.Add(state);
 
+        public void SeeCars(List<CarSighting> into) => into.Clear();
+
         public Task CompleteLapAsync(uint lapTimeMs, IReadOnlyList<uint> splits, byte cuts = 0)
         {
             Laps.Add((lapTimeMs, [.. splits]));

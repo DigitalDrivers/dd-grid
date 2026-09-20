@@ -123,14 +123,27 @@ target speed within the limits, moves its offset towards where it wants to be, a
 rotation, wheel speed, gear, engine speed, throttle and brake lights, all worked out from the line and
 the speed. 20 updates a second, the rate the preset already sets.
 
-**Traffic.** A bot sees every other car — the server sends it all of them. It turns their positions into
-distances along the line, brakes for the car in front, gets a tow behind it on a straight, and moves
-offset to pass when it is quicker and the side is free.
+**Traffic.** A bot sees every other car: the server sends every car's position to every client, so one
+connection is the whole field. Their positions become distances along the line, and from there:
+
+- **Following.** What matters is not the gap but what is left of it after shedding the speed difference,
+  so the braking distance for that difference comes off the gap first. That is why a car stood one box
+  behind another on the grid still launches, and why one arriving at a stopped car brakes 150 m early.
+- **The tow.** Behind a car on a straight, three per cent; not in a corner, where the car in front takes
+  the grip instead.
+- **Passing.** Quicker than the car in front and a side free: out to that side, held until past, then back
+  to the line. A car moves across by driving, so the offset follows a slope — about a hundred metres to
+  change lane — not a speed.
+- **Mistakes.** Every so often a corner comes out wrong and costs a couple of tenths. Each driver errs in
+  their own way and always the same way, so a race can be run again.
 
 **Contact.** A bot is not simulated by the game's physics: a member who hits one feels the hit (the game
-works contacts with other cars out locally), but the bot only reacts the way we make it. Contact within a
-few metres costs it speed and pushes it sideways, in proportion to the closing speed. Without that the
-bots look like they are on rails, which is the honest limit of this approach — see §11.
+works contacts with other cars out locally), but the bot only reacts the way we make it. Contact costs it
+speed and pushes it across, in proportion to the closing speed, and it finds its way back to the line.
+Without that the bots look like they are on rails, which is the honest limit of this approach — see §11.
+
+Retirements are **not** built. A bot that stops is a parked car the rest of the field has to get round,
+and a result the platform has to read as a retirement; both belong with the platform work in phase 3.
 
 ## 8. The race
 
@@ -171,7 +184,7 @@ Waiting in the pit box before going out is not built either. A bot that joins si
 | --- | --- | --- |
 | 0 **done** | The protocol client, the checksums, the racing line, the speed profile, the names. | `scripts/check.sh` is green: three named bots join a real AssettoServer, it counts every one of their laps, and a bot whose content differs is thrown out. |
 | 1 **done** | Grid start, the race procedure, lap and sector reporting. | A test race of 20 bots over 10 laps: all 200 laps counted by the server, every full lap within 250 ms of the target, nobody off the line they meant to be on, nobody thrown out. Seen in the game on a real server: the field in its grid boxes, the names and flags in the entry list, the standings with real gaps, 2:01 laps of the Nürburgring in a 911 Cup. |
-| 2 | Following, passing, tow, contact, mistakes, retirements. | Test race against simulated members that brake on purpose: no bot drives into them, positions change hands, a hit bot loses time. |
+| 2 **done** | Following, passing, tow, contact, mistakes. | A test race where the bots share the road with two drivers who do not react — one at a third of their pace, one standing on the racing line: no contact at all, the closest anyone came was 2.60 m, and everyone got by lap after lap instead of queueing up. A hit car ends up behind one that was not hit; a driver who errs is slower over a run than one who does not. |
 | 3 | Platform: columns, preset, sidecar, XP, UI. | e2e: an event with a bot grid runs, and every member gets their XP. |
 | 4 | Tuning against real members on a real track. | A live test race with members. |
 

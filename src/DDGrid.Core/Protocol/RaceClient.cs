@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Numerics;
 
 namespace DDGrid.Core.Protocol;
 
@@ -32,6 +33,9 @@ public sealed record SessionSnapshot(SessionType Type, string Name, int Laps, in
     public int GridPlaceOf(byte sessionId) => Array.IndexOf(Grid, sessionId);
 }
 
+/// <summary>Where another car was when it was last heard from.</summary>
+public readonly record struct CarSighting(byte SessionId, Vector3 Position, Vector3 Velocity, long HeardAtMs);
+
 /// <summary>What a bot needs from its connection. The real one is <see cref="RaceClient"/>.</summary>
 public interface IRaceLink
 {
@@ -41,6 +45,8 @@ public interface IRaceLink
     long? MillisecondsToStart { get; }
     void Send(in CarState state);
     Task CompleteLapAsync(uint lapTimeMs, IReadOnlyList<uint> splits, byte cuts = 0);
+    /// <summary>Every other car the server has told this one about, as of now.</summary>
+    void SeeCars(List<CarSighting> into);
 }
 
 /// <summary>
@@ -56,6 +62,7 @@ public sealed class RaceClient : IRaceLink, IAsyncDisposable
     private readonly byte[] _tcpBuffer = new byte[4096];
     private readonly byte[] _udpBuffer = new byte[512];
     private readonly SemaphoreSlim _tcpLock = new(1);
+    private readonly Dictionary<byte, CarSighting> _seen = [];
     private byte _sequence;
     private byte _lapCount;
     private long _startAtTicks;
@@ -153,6 +160,18 @@ public sealed class RaceClient : IRaceLink, IAsyncDisposable
         client._loops.Add(client.ReadUdpAsync());
         client._loops.Add(client.AskForTheSessionAsync());
         return client;
+    }
+
+    /// <summary>
+    /// Every other car the server has told this one about. The server sends all of them to every car, so
+    /// one connection sees the whole field.
+    /// </summary>
+    public void SeeCars(List<CarSighting> into)
+    {
+        into.Clear();
+        lock (_seen)
+            foreach (var car in _seen.Values)
+                into.Add(car);
     }
 
     /// <summary>Sends where the car is. Twenty times a second is what the servers ask for.</summary>
@@ -290,6 +309,15 @@ public sealed class RaceClient : IRaceLink, IAsyncDisposable
             catch (Exception) { return; }
             if (packet.Buffer.Length < 1) continue;
 
+            // Where everyone else is. A batch holds up to twenty cars, and the server sends single
+            // updates too; both carry the same record per car.
+            if (packet.Buffer[0] == (byte)ServerPacket.MegaPacket || packet.Buffer[0] == (byte)ServerPacket.PositionUpdate)
+            {
+                try { ReadPositions(packet.Buffer); }
+                catch (ArgumentOutOfRangeException) { /* a short packet is not worth the connection */ }
+                continue;
+            }
+
             // How long until the session starts. The server keeps saying until five seconds after it did.
             if (packet.Buffer[0] == (byte)ServerPacket.RaceStart && packet.Buffer.Length >= 11)
             {
@@ -311,6 +339,39 @@ public sealed class RaceClient : IRaceLink, IAsyncDisposable
                 writer.Value(Environment.TickCount);
                 try { await _udp.SendAsync(writer.Written.ToArray(), _stop.Token); }
                 catch (Exception) { return; }
+            }
+        }
+    }
+
+    /// <summary>
+    /// One car's record inside a position packet: who it is, where, and how fast. The rest of the record
+    /// is for drawing the car, which a bot does not do.
+    /// </summary>
+    private void ReadPositions(byte[] buffer)
+    {
+        var reader = new PacketReader(buffer);
+        var batched = (ServerPacket)reader.Byte() == ServerPacket.MegaPacket;
+        var count = 1;
+        if (batched)
+        {
+            reader.Skip(4 + 2);      // the server's time and this car's ping
+            count = reader.Byte();
+        }
+
+        var now = Environment.TickCount64;
+        lock (_seen)
+        {
+            for (var i = 0; i < count; i++)
+            {
+                var sessionId = reader.Byte();
+                reader.Skip(1 + 4 + 2);          // sequence, timestamp, ping
+                var position = reader.Value<Vector3>();
+                reader.Skip(12);                 // rotation
+                var velocity = reader.Value<Vector3>();
+                reader.Skip(4 + 1 + 1 + 2 + 1 + 4);   // tyres, steering, engine, gear, lights
+                if (!batched) reader.Skip(2 + 1);     // delta to the best lap, and the throttle
+
+                if (sessionId != SessionId) _seen[sessionId] = new CarSighting(sessionId, position, velocity, now);
             }
         }
     }

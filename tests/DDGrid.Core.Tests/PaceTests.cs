@@ -65,6 +65,53 @@ public class PaceTests
     }
 
     [Fact]
+    public void a_car_that_is_hit_loses_time_to_one_that_is_not()
+    {
+        var lane = Oval();
+        var profile = SpeedProfile.ForLapTime(lane, CarLimits.Nominal, 60f);
+        var clean = new Bot(lane, profile, startDistance: 200f);
+        var hit = new Bot(lane, profile, startDistance: 200f);
+        var contact = new Surroundings(3f, 20f, false, false, 1f);
+
+        var pushedTo = 0f;
+        for (var step = 0; step < 100; step++)
+        {
+            clean.Advance(0.05f);
+            hit.Advance(0.05f, step == 10 ? contact : Surroundings.Clear);
+            if (step == 11) pushedTo = hit.LateralOffset;
+        }
+
+        // On this oval that is about four tenths of a second, which is what a shove costs.
+        Assert.True(hit.Distance < clean.Distance - 3f, $"only {clean.Distance - hit.Distance:F1} m behind");
+        // Shoved across at the moment of contact, and back on the line by the end of it.
+        Assert.True(MathF.Abs(pushedTo) > 0.5f, $"only pushed to {pushedTo:F2} m");
+        Assert.Equal(0f, hit.LateralOffset, 0.1f);
+    }
+
+    [Fact]
+    public void a_driver_who_makes_mistakes_is_slower_than_one_who_does_not()
+    {
+        var lane = Oval();
+        var profile = SpeedProfile.ForLapTime(lane, CarLimits.Nominal, 60f);
+        var perfect = new Bot(lane, profile);
+        var human = new Bot(lane, profile, mistakeSeed: 7);
+
+        var perfectLaps = new List<uint>();
+        var humanLaps = new List<uint>();
+        for (var step = 0; step < 20_000 && perfectLaps.Count < 10; step++)
+        {
+            if (perfect.Advance(0.05f) is { } a) perfectLaps.Add(a.TimeMs);
+            if (human.Advance(0.05f) is { } b) humanLaps.Add(b.TimeMs);
+        }
+
+        var both = Math.Min(perfectLaps.Count, humanLaps.Count);
+        Assert.All(perfectLaps, lap => Assert.InRange(lap, 59_900u, 60_100u));
+        // Mistakes cost tenths over a run, not seconds in a lap: nobody falls off the road.
+        Assert.True(humanLaps.Take(both).Sum(l => (long)l) > perfectLaps.Take(both).Sum(l => (long)l), "the mistakes cost nothing");
+        Assert.All(humanLaps, lap => Assert.InRange(lap, 59_900u, 62_000u));
+    }
+
+    [Fact]
     public void a_tighter_corner_costs_time()
     {
         var wide = SpeedProfile.For(Oval(cornerRadius: 120f), CarLimits.Nominal);

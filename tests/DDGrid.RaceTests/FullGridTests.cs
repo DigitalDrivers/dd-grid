@@ -55,6 +55,8 @@ public class FullGridTests(Xunit.Abstractions.ITestOutputHelper output)
         public SessionSnapshot Session => inner.Session;
         public long? MillisecondsToStart => inner.MillisecondsToStart;
 
+        public void SeeCars(List<CarSighting> into) => inner.SeeCars(into);
+
         public void Send(in CarState state)
         {
             // Only once it is running: in its box a car stands beside the line on purpose.

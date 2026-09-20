@@ -7,9 +7,9 @@ namespace DDGrid.Core;
 public readonly record struct CompletedLap(uint TimeMs, uint[] Splits);
 
 /// <summary>
-/// One simulated driver on track: how far round the lap it is, how fast, and what the other cars see of
-/// it. It follows the racing line at the speed the profile asks for; everything else — fighting for
-/// position, contact, mistakes — comes later.
+/// One simulated driver on track: how far round the lap it is, how fast, how far across the road, and
+/// what the other cars see of it. It drives the racing line at the speed the profile asks for, keeps off
+/// the car in front, pulls out to go round it, and loses time when it is hit.
 /// </summary>
 public sealed class Bot
 {
@@ -18,27 +18,50 @@ public sealed class Bot
     private const int MaxRpm = 8000;
     private const int Gears = 6;
 
-    private readonly Lane _lane;
-    private readonly SpeedProfile _profile;
-    /// <summary>How far a car takes to come across onto the line after a start from its box.</summary>
-    private const float MergeMeters = 180f;
-
     /// <summary>
     /// A centimetre of air under the car. The racing line was recorded while driving, with the suspension
     /// loaded, so a car put exactly on it sits a touch into the road.
     /// </summary>
     private const float RideHeightMeters = 0.01f;
 
+    /// <summary>
+    /// How steeply a car can cross the road: metres across per metre along. A car moves sideways by
+    /// driving, so this is a slope, not a speed — it takes about a hundred metres to change lane.
+    /// </summary>
+    private const float AcrossSlope = 0.025f;
+
+    /// <summary>Room left between a car and the edge of the track.</summary>
+    private const float EdgeMarginMeters = 1.5f;
+
+    /// <summary>The same contact shakes a car once, not once every tick.</summary>
+    private const float ContactCooldownSeconds = 1.5f;
+
+    /// <summary>How often a driver who makes mistakes makes one, on average.</summary>
+    private const float MistakeEverySeconds = 150f;
+
+    /// <summary>What a mistake costs while it lasts, and how long that is.</summary>
+    private const float MistakeCost = 0.90f;
+    private const float MistakeSeconds = 2f;
+
+    private readonly Lane _lane;
+    private readonly SpeedProfile _profile;
     private readonly uint[] _splits = new uint[3];
     private float _lapTimeSeconds;
     private float _lastSpeed;
-    private float _offsetMeters;
-    private float _offsetFadeLeft;
+    private readonly Random? _mistakes;
+    private float _offsetTarget;
+    private float _contactCooldown;
+    private float _mistakeLeft;
 
-    public Bot(Lane lane, SpeedProfile profile, float startDistance = 0f)
+    /// <param name="mistakeSeed">
+    /// A driver who is not perfect: now and then a corner comes out wrong and costs a few tenths. Nought
+    /// is a driver who never errs, which is what a lap time is measured against.
+    /// </param>
+    public Bot(Lane lane, SpeedProfile profile, float startDistance = 0f, int mistakeSeed = 0)
     {
         _lane = lane;
         _profile = profile;
+        _mistakes = mistakeSeed == 0 ? null : new Random(mistakeSeed);
         Distance = startDistance;
         Speed = profile.At(startDistance);
         _lastSpeed = Speed;
@@ -53,22 +76,54 @@ public sealed class Bot
     /// <summary>Laps finished since it went out.</summary>
     public int Laps { get; private set; }
 
+    /// <summary>How far beside the racing line the car is, metres, positive to the left.</summary>
+    public float LateralOffset { get; private set; }
+
+    /// <summary>How the car sees itself from the rest of the field.</summary>
+    public CarOnTrack Seen(byte sessionId) => new(sessionId, Distance, Speed, LateralOffset);
+
+    /// <summary>Drives on with the road to itself.</summary>
+    public CompletedLap? Advance(float seconds) => Advance(seconds, Surroundings.Clear);
+
     /// <summary>
     /// Drives on. Returns the lap when the car crossed the line in this step, otherwise null.
     /// </summary>
-    public CompletedLap? Advance(float seconds)
+    public CompletedLap? Advance(float seconds, in Surroundings around)
     {
         _lastSpeed = Speed;
-        // The profile says how fast to be here. A car standing on the grid cannot be that fast yet, so it
-        // works its way up at the rate it accelerates; once it is up to speed the profile is what it drives.
-        var target = _profile.At(Distance);
+        _contactCooldown = MathF.Max(0f, _contactCooldown - seconds);
+        var here = _lane.Sample(Distance);
+
+        // How fast the driver wants to go: their own pace, helped by the tow, held back by the car in
+        // front, and every so often spoiled by getting a corner wrong.
+        if (_mistakeLeft > 0) _mistakeLeft -= seconds;
+        else if (_mistakes != null && _mistakes.NextDouble() < seconds / MistakeEverySeconds) _mistakeLeft = MistakeSeconds;
+
         var limits = _profile.Limits;
+        var pace = Racecraft.WithTow(_profile.At(Distance), around, here.Radius);
+        if (_mistakeLeft > 0) pace *= MistakeCost;
+        var target = Racecraft.FollowingSpeed(pace, Speed, limits.BrakeG * 9.81f, around);
+
         Speed = target > Speed
             ? MathF.Min(target, Speed + limits.AccelG * 9.81f * seconds)
             : MathF.Max(target, Speed - limits.BrakeG * 9.81f * seconds);
+
+        if (around.TouchedFrom != 0f && _contactCooldown <= 0f)
+        {
+            var closing = MathF.Max(3f, MathF.Abs(Speed - around.SpeedAhead));
+            (Speed, LateralOffset) = Racecraft.AfterContact(Speed, LateralOffset, closing, around.TouchedFrom);
+            _offsetTarget = LateralOffset;
+            _contactCooldown = ContactCooldownSeconds;
+        }
+
+        // Where across the road to be, and as much of the way there as driving this far allows.
+        _offsetTarget = Racecraft.WantedOffset(_offsetTarget, pace, around);
+        var room = Math.Clamp(_offsetTarget, -MathF.Max(0f, here.SideRight - EdgeMarginMeters), MathF.Max(0f, here.SideLeft - EdgeMarginMeters));
+        var step = AcrossSlope * Speed * seconds;
+        LateralOffset = MathF.Abs(room - LateralOffset) <= step ? room : LateralOffset + MathF.Sign(room - LateralOffset) * step;
+
         var moved = Distance + Speed * seconds;
         _lapTimeSeconds += seconds;
-        if (_offsetFadeLeft > 0) _offsetFadeLeft = MathF.Max(0, _offsetFadeLeft - Speed * seconds);
 
         // Three sectors, as the game has them: the time is taken as the car passes each line.
         for (var sector = 0; sector < _splits.Length - 1; sector++)
@@ -86,7 +141,6 @@ public sealed class Bot
         // Over the line: the lap that just ended is worth the time it took, and the last sector with it.
         Distance = moved - _lane.Length;
         Laps++;
-        // Every sector time is measured from the line, so the last one is the lap itself.
         _splits[^1] = Milliseconds(_lapTimeSeconds);
         var lap = new CompletedLap(_splits[^1], [.. _splits]);
         _lapTimeSeconds = 0;
@@ -100,8 +154,8 @@ public sealed class Bot
     /// </summary>
     /// <param name="lateralOffset">
     /// How far beside the line it starts, metres, positive to the left. A car starting from its grid box
-    /// stands beside the line and comes across onto it over the first stretch, instead of appearing on it
-    /// the moment the lights go out.
+    /// stands beside the line and comes across onto it as it drives away, instead of appearing on it the
+    /// moment the lights go out.
     /// </param>
     public void StartFrom(float distance, float lateralOffset = 0f)
     {
@@ -110,15 +164,11 @@ public sealed class Bot
         _lastSpeed = 0;
         Laps = 0;
         _lapTimeSeconds = 0;
-        _offsetMeters = lateralOffset;
-        _offsetFadeLeft = MergeMeters;
+        LateralOffset = lateralOffset;
+        _offsetTarget = 0f;
+        _contactCooldown = 0f;
         Array.Clear(_splits);
     }
-
-    /// <summary>How far beside the line the car is right now, metres.</summary>
-    public float LateralOffset => _offsetFadeLeft <= 0 ? 0 : _offsetMeters * (_offsetFadeLeft / MergeMeters);
-
-    private static uint Milliseconds(float seconds) => (uint)MathF.Round(seconds * 1000);
 
     /// <summary>What the other cars are told about this one.</summary>
     public CarState State()
@@ -130,11 +180,9 @@ public sealed class Bot
         // Inside a gear the engine runs up from idle to its limit and drops back at the change.
         var inGear = Speed / 12f - (gear - 1);
 
-        // Beside the line while it is still coming across from its grid box.
-        var offset = LateralOffset;
-        var position = offset == 0
+        var position = LateralOffset == 0f
             ? sample.Position
-            : sample.Position + Vector3.Normalize(Vector3.Cross(sample.Normal, sample.Forward)) * offset;
+            : sample.Position + Vector3.Normalize(Vector3.Cross(sample.Normal, sample.Forward)) * LateralOffset;
         position.Y += RideHeightMeters;
 
         return new CarState
@@ -157,4 +205,6 @@ public sealed class Bot
     public static CarState OnGrid(TrackSlot box) =>
         CarState.Still(box.Position with { Y = box.Position.Y + RideHeightMeters },
             CarState.Facing(new Vector3(MathF.Sin(box.HeadingRad), 0, MathF.Cos(box.HeadingRad)), 0f));
+
+    private static uint Milliseconds(float seconds) => (uint)MathF.Round(seconds * 1000);
 }

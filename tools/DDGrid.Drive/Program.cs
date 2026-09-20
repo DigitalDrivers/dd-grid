@@ -27,9 +27,14 @@ var lanePath = Path.Combine(serverRoot, "content", "tracks", pack.Track, pack.La
 var lane = new Lane(FastLane.ReadFile(lanePath));
 Console.WriteLine($"{pack.Track}/{pack.Layout}: {lane.Length:F0} m, {pack.Grid.Length} grid boxes");
 
-var field = Roster.Field(count, seed: Number("seed", 1));
+var drivers = Roster.Field(count, seed: Number("seed", 1));
 var clients = new List<RaceClient>();
 var bots = new List<RaceBot>();
+// Every car on track, as the bots see it. Filled once a tick: the bots from what they are doing, and
+// everyone else from what the server says about them.
+var field = new Field(lane);
+var ours = new HashSet<byte>();
+var sightings = new List<CarSighting>();
 
 using var stop = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; stop.Cancel(); };
@@ -43,14 +48,16 @@ for (var i = 0; i < count; i++)
         Host = host,
         Port = port,
         Guid = Roster.GuidOf(i),
-        Name = field[i].Name,
-        Nation = field[i].Nation,
+        Name = drivers[i].Name,
+        Nation = drivers[i].Nation,
         CarModel = car,
         ServerRoot = serverRoot,
     }, stop.Token);
     clients.Add(client);
-    bots.Add(new RaceBot(client, lane, profile, pack.Grid, reactionSeconds: 0.25f + i * 0.03f));
-    Console.WriteLine($"slot {client.SessionId}: {field[i].Name} ({field[i].Nation}), lap {profile.LapTimeSeconds:F1} s"
+    ours.Add(client.SessionId);
+    // Every driver errs now and then, and each one in their own way.
+    bots.Add(new RaceBot(client, lane, profile, pack.Grid, reactionSeconds: 0.25f + i * 0.03f, field: field, mistakeSeed: 1000 + i));
+    Console.WriteLine($"slot {client.SessionId}: {drivers[i].Name} ({drivers[i].Nation}), lap {profile.LapTimeSeconds:F1} s"
         + (skins.Length > 0 ? $", skin {skins[i % skins.Length]}" : ""));
 }
 
@@ -62,6 +69,13 @@ try
 {
     while (await ticker.WaitForNextTickAsync(stop.Token))
     {
+        field.Clear();
+        for (var i = 0; i < bots.Count; i++) field.Add(bots[i].Bot.Seen(clients[i].SessionId));
+        clients[0].SeeCars(sightings);
+        foreach (var sighting in sightings)
+            if (!ours.Contains(sighting.SessionId))
+                field.Add(sighting);
+
         foreach (var bot in bots) await bot.TickAsync(0.05f);
 
         if (DateTime.UtcNow - said < TimeSpan.FromSeconds(5)) continue;

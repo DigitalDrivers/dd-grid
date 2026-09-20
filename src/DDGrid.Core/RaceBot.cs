@@ -21,18 +21,22 @@ public sealed class RaceBot
     private readonly Lane _lane;
     private readonly IReadOnlyList<TrackSlot> _grid;
     private readonly float _reactionSeconds;
+    private readonly Field? _field;
     private TrackSlot? _box;
     private float _reactionLeft;
 
     /// <param name="grid">The track's grid boxes. Empty means there is nowhere to line up, so it drives.</param>
     /// <param name="reactionSeconds">How long this driver takes to get going when the lights go out.</param>
-    public RaceBot(IRaceLink link, Lane lane, SpeedProfile profile, IReadOnlyList<TrackSlot> grid, float reactionSeconds = 0.3f)
+    /// <param name="field">Every car on track. Without one the bot drives as if the road were its own.</param>
+    /// <param name="mistakeSeed">Makes this driver fallible; nought is one who never errs.</param>
+    public RaceBot(IRaceLink link, Lane lane, SpeedProfile profile, IReadOnlyList<TrackSlot> grid, float reactionSeconds = 0.3f, Field? field = null, int mistakeSeed = 0)
     {
         _link = link;
         _lane = lane;
         _grid = grid;
         _reactionSeconds = reactionSeconds;
-        Bot = new Bot(lane, profile);
+        _field = field;
+        Bot = new Bot(lane, profile, mistakeSeed: mistakeSeed);
     }
 
     public Bot Bot { get; }
@@ -70,7 +74,7 @@ public sealed class RaceBot
         }
 
         Phase = RacePhase.Racing;
-        var lap = Bot.Advance(seconds);
+        var lap = Bot.Advance(seconds, _field?.Around(_link.SessionId) ?? Surroundings.Clear);
         _link.Send(Bot.State());
         if (lap.HasValue) await _link.CompleteLapAsync(lap.Value.TimeMs, lap.Value.Splits);
     }
