@@ -17,7 +17,6 @@ race control, live timing, the classification and the result need no change to s
 | `data/tracks/` | The track packs, one per track and layout. |
 | `tests/DDGrid.Core.Tests/` | xUnit; tests marked `[GameFact]` skip themselves without the game. |
 | `tests/DDGrid.RaceTests/` | Bots racing a real AssettoServer, checksums and all. |
-| `Dockerfile` | The image race control starts beside a race server. |
 | `SPEC.md` | What is being built, what is proven, and in what order. |
 
 ## Build and test
@@ -27,6 +26,10 @@ Requires the .NET 9 SDK.
 ```bash
 scripts/check.sh
 ```
+
+The image race control starts beside a race server is built in dd-platform (`infra/dd-grid/`): it clones
+this repository and bakes in the race server's own content, so the drivers checksum byte for byte what
+the server they join checksums.
 
 ## Putting a field on a server
 
