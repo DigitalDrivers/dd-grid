@@ -24,12 +24,6 @@ public sealed class Bot
     /// </summary>
     private const float RideHeightMeters = 0.01f;
 
-    /// <summary>
-    /// How steeply a car can cross the road: metres across per metre along. A car moves sideways by
-    /// driving, so this is a slope, not a speed — it takes about a hundred metres to change lane.
-    /// </summary>
-    private const float AcrossSlope = 0.025f;
-
     /// <summary>Room left between a car and the edge of the track.</summary>
     private const float EdgeMarginMeters = 1.5f;
 
@@ -103,6 +97,8 @@ public sealed class Bot
         var pace = Racecraft.WithTow(_profile.At(Distance), around, here.Radius);
         if (_mistakeLeft > 0) pace *= MistakeCost;
         var target = Racecraft.FollowingSpeed(pace, Speed, limits.BrakeG * 9.81f, around);
+        var pullingOut = MathF.Abs(Racecraft.WantedOffset(_offsetTarget, pace, around) - LateralOffset) > 0.3f;
+        target = Racecraft.PullingOutSpeed(target, pullingOut, around);
 
         Speed = target > Speed
             ? MathF.Min(target, Speed + limits.AccelG * 9.81f * seconds)
@@ -119,7 +115,10 @@ public sealed class Bot
         // Where across the road to be, and as much of the way there as driving this far allows.
         _offsetTarget = Racecraft.WantedOffset(_offsetTarget, pace, around);
         var room = Math.Clamp(_offsetTarget, -MathF.Max(0f, here.SideRight - EdgeMarginMeters), MathF.Max(0f, here.SideLeft - EdgeMarginMeters));
-        var step = AcrossSlope * Speed * seconds;
+        // Round a car that stands still a driver steers hard; any other change of line is a gentle one, which
+        // is also what keeps a field from snapping onto the line in single file when the lights go out.
+        var aroundStoppedCar = pullingOut && around.SpeedAhead < 1f && around.GapAhead < Racecraft.LooksAheadMeters;
+        var step = (aroundStoppedCar ? Racecraft.AcrossSlopeAt(Speed) : Racecraft.LaneChangeSlope) * Speed * seconds;
         LateralOffset = MathF.Abs(room - LateralOffset) <= step ? room : LateralOffset + MathF.Sign(room - LateralOffset) * step;
 
         var moved = Distance + Speed * seconds;

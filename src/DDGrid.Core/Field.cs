@@ -45,6 +45,7 @@ public sealed class Field(Lane lane)
         var me = _cars.FirstOrDefault(c => c.SessionId == sessionId);
         var ahead = float.MaxValue;
         var aheadSpeed = 0f;
+        var aheadAcross = 0f;
         var left = false;
         var right = false;
         var touchedFrom = 0f;
@@ -61,6 +62,7 @@ public sealed class Field(Lane lane)
             {
                 ahead = gap;
                 aheadSpeed = other.SpeedMs;
+                aheadAcross = across;
             }
 
             if (MathF.Abs(gap) < AlongsideMeters)
@@ -73,7 +75,7 @@ public sealed class Field(Lane lane)
                 touchedFrom = across >= 0 ? 1f : -1f;
         }
 
-        return new Surroundings(ahead, aheadSpeed, left, right, touchedFrom);
+        return new Surroundings(ahead, aheadSpeed, left, right, touchedFrom, aheadAcross);
     }
 
     /// <summary>How far in front of <paramref name="from"/> the other car is; negative means behind.</summary>

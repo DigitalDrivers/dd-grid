@@ -67,6 +67,7 @@ public sealed class RaceClient : IRaceLink, IAsyncDisposable
     private byte _lapCount;
     private long _startAtTicks;
     private bool _knowsStart;
+    private volatile string? _lostBecause;
 
     private RaceClient(TcpClient tcp, UdpClient udp, byte sessionId, string trackName, string trackConfig)
     {
@@ -95,6 +96,32 @@ public sealed class RaceClient : IRaceLink, IAsyncDisposable
 
     public event Action<SessionSnapshot>? SessionChanged;
 
+    /// <summary>
+    /// False once the server has closed the connection or a write to it failed: the car is off the server,
+    /// and whatever it sends goes nowhere. A server may throw a car out at any time; it must never take the
+    /// rest of the field with it.
+    /// </summary>
+    public bool IsConnected => _lostBecause == null;
+
+    /// <summary>Why the car is off the server, once it is.</summary>
+    public string? LostBecause => _lostBecause;
+
+    /// <summary>
+    /// Carries the lap count over from the connection this one replaces, so a car that comes back on its
+    /// slot goes on counting where it was, as the server does.
+    /// </summary>
+    public void TakeOverFrom(RaceClient previous) => _lapCount = previous._lapCount;
+
+    private void Lose(string why) => _lostBecause ??= why;
+
+    /// <summary>
+    /// How far off the start is, from the two times the server sends. Both are the car's own clock — the
+    /// tick count it sent in its pings — cut to 32 bits, so the difference is taken in 32 bits as well.
+    /// Taken in 64 bits it came out 49.7 days off once the machine had been up for 24.9 days and the clock
+    /// no longer fitted a signed number, and a start 49 days ago is one a bot drives straight through.
+    /// </summary>
+    public static int MillisecondsUntil(int startTime, uint serverTime) => unchecked(startTime - (int)serverTime);
+
     /// <summary>Connects, proves the content, and takes the slot. Throws when the server says no.</summary>
     public static async Task<RaceClient> JoinAsync(RaceClientOptions options, CancellationToken cancellationToken = default)
     {
@@ -115,7 +142,7 @@ public sealed class RaceClient : IRaceLink, IAsyncDisposable
         await SendAsync(tcp, buffer, writer.Length, cancellationToken);
 
         var answer = await ReadPacketAsync(tcp, buffer, cancellationToken);
-        if (answer.Length == 0) throw new IOException("The server closed the connection during the handshake");
+        if (answer is not { Length: > 0 }) throw new IOException("The server closed the connection during the handshake");
         var reader = new PacketReader(answer);
         var kind = (ServerPacket)reader.Byte();
         if (kind != ServerPacket.NewCarConnection)
@@ -193,6 +220,7 @@ public sealed class RaceClient : IRaceLink, IAsyncDisposable
     /// <summary>Crosses the line. The server counts the lap, puts the car in the order and tells everyone.</summary>
     public async Task CompleteLapAsync(uint lapTimeMs, IReadOnlyList<uint> splits, byte cuts = 0)
     {
+        if (!IsConnected) return;
         var writer = new PacketWriter(_tcpBuffer.AsSpan(2));
         writer.Id(ClientPacket.LapCompleted);
         writer.Value((uint)Environment.TickCount);
@@ -280,13 +308,16 @@ public sealed class RaceClient : IRaceLink, IAsyncDisposable
     }
 
     /// <summary>
-    /// The server tells a car about the session only when the car asks with the session it believes is
-    /// running and the two differ. So ask, once a second, the way the game does — otherwise a car never
-    /// learns that the race has started or where it starts from.
+    /// A car can ask the server for the session with the one it believes is running; the server answers when
+    /// the two differ. It also tells every car on its own when a session changes, once the new grid is set,
+    /// so asking is only a way back for a car that missed that. Asked once a second, as the game does, a
+    /// question now and then lands in the moment the server has switched but not yet set the grid: it fails
+    /// to answer (AssettoServer 0.0.55-pre35, CurrentSessionUpdate with a null Grid) and throws the car out.
+    /// Twelve bots asking every second ran into that at almost every session change.
     /// </summary>
     private async Task AskForTheSessionAsync()
     {
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(30));
         while (!_stop.IsCancellationRequested && await timer.WaitForNextTickAsync(_stop.Token))
         {
             try
@@ -325,7 +356,7 @@ public sealed class RaceClient : IRaceLink, IAsyncDisposable
                 reader.Byte();
                 var startTime = reader.Value<int>();
                 var serverTime = reader.Value<uint>();
-                _startAtTicks = Environment.TickCount64 + (startTime - (long)serverTime);
+                _startAtTicks = Environment.TickCount64 + MillisecondsUntil(startTime, serverTime);
                 _knowsStart = true;
                 continue;
             }
@@ -376,15 +407,23 @@ public sealed class RaceClient : IRaceLink, IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Reads what the server says for as long as the connection lasts. It stops only when the connection
+    /// does: a car that stops reading no longer learns about sessions, and once the buffers are full the
+    /// server stops reading it too.
+    /// </summary>
     private async Task ReadTcpAsync()
     {
-        var buffer = new byte[8192];
+        // A packet's length is two bytes, so none is bigger than this.
+        var buffer = new byte[ushort.MaxValue];
         while (!_stop.IsCancellationRequested)
         {
-            byte[] packet;
+            byte[]? packet;
             try { packet = await ReadPacketAsync(_tcp, buffer, _stop.Token); }
-            catch (Exception) { return; }
-            if (packet.Length == 0) return;
+            catch (OperationCanceledException) { return; }
+            catch (Exception error) { Lose($"reading from the server failed: {error.Message}"); return; }
+            if (packet == null) { Lose("the server closed the connection"); return; }
+            if (packet.Length == 0) continue;
 
             if ((ServerPacket)packet[0] == ServerPacket.CurrentSessionUpdate)
             {
@@ -422,7 +461,15 @@ public sealed class RaceClient : IRaceLink, IAsyncDisposable
         try
         {
             BitConverter.TryWriteBytes(_tcpBuffer.AsSpan(0, 2), (ushort)length);
-            await _tcp.GetStream().WriteAsync(_tcpBuffer.AsMemory(0, length + 2));
+            // What cannot go out in two seconds will not: the connection is as good as gone.
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            await _tcp.GetStream().WriteAsync(_tcpBuffer.AsMemory(0, length + 2), timeout.Token);
+        }
+        catch (Exception error) when (error is IOException or SocketException or ObjectDisposedException or InvalidOperationException or OperationCanceledException)
+        {
+            // Written into a connection the server has closed. The car is off the server; saying so is
+            // enough, throwing would stop every other car too.
+            Lose($"writing to the server failed: {error.Message}");
         }
         finally
         {
@@ -438,14 +485,14 @@ public sealed class RaceClient : IRaceLink, IAsyncDisposable
         await tcp.GetStream().WriteAsync(framed, cancellationToken);
     }
 
-    // Every packet over TCP starts with its length as two bytes.
-    private static async Task<byte[]> ReadPacketAsync(TcpClient tcp, byte[] buffer, CancellationToken cancellationToken)
+    // Every packet over TCP starts with its length as two bytes. Null means the connection is closed.
+    private static async Task<byte[]?> ReadPacketAsync(TcpClient tcp, byte[] buffer, CancellationToken cancellationToken)
     {
         var stream = tcp.GetStream();
-        if (!await ReadExactAsync(stream, buffer.AsMemory(0, 2), cancellationToken)) return [];
+        if (!await ReadExactAsync(stream, buffer.AsMemory(0, 2), cancellationToken)) return null;
         var length = BitConverter.ToUInt16(buffer, 0);
         if (length > buffer.Length) throw new IOException($"A packet of {length} bytes does not fit");
-        return await ReadExactAsync(stream, buffer.AsMemory(0, length), cancellationToken) ? buffer[..length] : [];
+        return await ReadExactAsync(stream, buffer.AsMemory(0, length), cancellationToken) ? buffer[..length] : null;
     }
 
     private static async Task<bool> ReadExactAsync(NetworkStream stream, Memory<byte> target, CancellationToken cancellationToken)

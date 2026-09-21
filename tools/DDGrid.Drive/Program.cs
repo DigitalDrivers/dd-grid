@@ -71,20 +71,22 @@ var field = new Field(lane);
 var ours = new HashSet<byte>();
 var sightings = new List<CarSighting>();
 
+RaceClientOptions OptionsOf(int i) => new()
+{
+    Host = config.Host,
+    Port = config.Port,
+    Guid = Roster.GuidOf(i),
+    Name = drivers[i].Name,
+    Nation = drivers[i].Nation,
+    CarModel = config.Car,
+    ServerRoot = config.ServerRoot,
+};
+
 for (var i = 0; i < config.Bots; i++)
 {
     // A field is not all the same pace: a little under half a per cent a place, fastest first.
     var profile = SpeedProfile.ForLapTime(lane, CarLimits.Nominal, target * (1 + i * 0.004f));
-    var client = await JoinAsync(new RaceClientOptions
-    {
-        Host = config.Host,
-        Port = config.Port,
-        Guid = Roster.GuidOf(i),
-        Name = drivers[i].Name,
-        Nation = drivers[i].Nation,
-        CarModel = config.Car,
-        ServerRoot = config.ServerRoot,
-    }, i == 0 ? config.WaitSeconds : 15, stop.Token);
+    var client = await JoinAsync(OptionsOf(i), i == 0 ? config.WaitSeconds : 15, stop.Token);
 
     clients.Add(client);
     ours.Add(client.SessionId);
@@ -98,23 +100,77 @@ Console.WriteLine($"{clients[0].Session.Type} '{clients[0].Session.Name}' on {cl
 
 using var ticker = new PeriodicTimer(TimeSpan.FromMilliseconds(50));
 var said = DateTime.UtcNow;
+// A car the server throws out comes back on its slot, the way a member whose game dropped would. Until it
+// is back it is not on the track, so the others do not see it either.
+var rejoining = new Task<RaceClient>?[bots.Count];
+var nextTry = new DateTime[bots.Count];
 try
 {
     while (await ticker.WaitForNextTickAsync(stop.Token))
     {
-        field.Clear();
-        for (var i = 0; i < bots.Count; i++) field.Add(bots[i].Bot.Seen(clients[i].SessionId));
-        clients[0].SeeCars(sightings);
-        foreach (var sighting in sightings)
-            if (!ours.Contains(sighting.SessionId))
-                field.Add(sighting);
+        for (var i = 0; i < bots.Count; i++)
+        {
+            if (clients[i].IsConnected || DateTime.UtcNow < nextTry[i]) continue;
+            if (rejoining[i] == null)
+            {
+                Console.WriteLine($"slot {clients[i].SessionId}: {drivers[i].Name} is off the server ({clients[i].LostBecause}), rejoining");
+                rejoining[i] = JoinAsync(OptionsOf(i), 30, stop.Token);
+            }
+            else if (rejoining[i]!.IsCompleted)
+            {
+                if (rejoining[i]!.IsCompletedSuccessfully)
+                {
+                    var lost = clients[i];
+                    clients[i] = rejoining[i]!.Result;
+                    clients[i].TakeOverFrom(lost);
+                    ours.Add(clients[i].SessionId);
+                    bots[i].Reconnected(clients[i]);
+                    _ = lost.DisposeAsync().AsTask();
+                    Console.WriteLine($"slot {clients[i].SessionId}: {drivers[i].Name} is back");
+                }
+                else
+                {
+                    // Refused, or no answer: try again in a while rather than knock on every tick.
+                    Console.WriteLine($"slot {clients[i].SessionId}: {drivers[i].Name} could not rejoin: {rejoining[i]!.Exception?.GetBaseException().Message}");
+                    nextTry[i] = DateTime.UtcNow.AddSeconds(10);
+                }
+                rejoining[i] = null;
+            }
+        }
 
-        foreach (var bot in bots) await bot.TickAsync(0.05f);
+        field.Clear();
+        for (var i = 0; i < bots.Count; i++)
+            if (clients[i].IsConnected)
+                field.Add(bots[i].Bot.Seen(clients[i].SessionId));
+        // Any car still on the server sees the whole field.
+        var eyes = clients.FirstOrDefault(c => c.IsConnected);
+        if (eyes != null)
+        {
+            eyes.SeeCars(sightings);
+            foreach (var sighting in sightings)
+                if (!ours.Contains(sighting.SessionId))
+                    field.Add(sighting);
+        }
+
+        for (var i = 0; i < bots.Count; i++)
+        {
+            if (!clients[i].IsConnected) continue;
+            try
+            {
+                await bots[i].TickAsync(0.05f);
+            }
+            catch (Exception error) when (error is not OperationCanceledException)
+            {
+                // One driver's trouble is that driver's; the rest of the field races on.
+                Console.WriteLine($"slot {clients[i].SessionId}: {drivers[i].Name}: {error.GetType().Name}: {error.Message}");
+            }
+        }
 
         if (DateTime.UtcNow - said < TimeSpan.FromSeconds(5)) continue;
         said = DateTime.UtcNow;
-        Console.WriteLine($"{clients[0].Session.Type} {bots[0].Phase}, start in {clients[0].MillisecondsToStart / 1000d:F1} s, "
-            + $"laps {string.Join(" ", bots.Select(b => b.Bot.Laps))}");
+        var lead = eyes ?? clients[0];
+        Console.WriteLine($"{lead.Session.Type} {bots[0].Phase}, start in {lead.MillisecondsToStart / 1000d:F1} s, "
+            + $"laps {string.Join(" ", bots.Select(b => b.Bot.Laps))}, on the server {clients.Count(c => c.IsConnected)} of {clients.Count}");
     }
 }
 catch (OperationCanceledException)

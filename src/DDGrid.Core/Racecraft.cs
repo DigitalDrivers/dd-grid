@@ -6,7 +6,8 @@ namespace DDGrid.Core;
 /// <param name="LeftBlocked">Another car is alongside on the left.</param>
 /// <param name="RightBlocked">Another car is alongside on the right.</param>
 /// <param name="TouchedFrom">Which side a car is touching this one, -1 right, 1 left, 0 not at all.</param>
-public readonly record struct Surroundings(float GapAhead, float SpeedAhead, bool LeftBlocked, bool RightBlocked, float TouchedFrom)
+/// <param name="AcrossAhead">How far across the car in front is from this one; only one close across is in the way.</param>
+public readonly record struct Surroundings(float GapAhead, float SpeedAhead, bool LeftBlocked, bool RightBlocked, float TouchedFrom, float AcrossAhead = 0f)
 {
     /// <summary>Nobody near.</summary>
     public static readonly Surroundings Clear = new(float.MaxValue, 0f, false, false, 0f);
@@ -27,6 +28,33 @@ public static class Racecraft
     /// </summary>
     public const float LooksAheadMeters = 220f;
 
+    /// <summary>How far across another car still takes up the road in front: a car's width and a little room.</summary>
+    public const float BlocksAcrossMeters = 2.2f;
+
+    /// <summary>Walking pace: how a driver gets out from behind a car that does not move.</summary>
+    public const float CrawlMs = 2.5f;
+
+    /// <summary>
+    /// How steeply a car changes line: metres across per metre along. A car moves sideways by driving, so
+    /// this is a slope, not a speed — it takes about a hundred metres to change lane.
+    /// </summary>
+    public const float LaneChangeSlope = 0.025f;
+
+    /// <summary>
+    /// How steeply a driver steers round a car that stands still. At racing speed that is a change of lane
+    /// like any other; at walking pace a driver on full lock is out from behind it within a car length or
+    /// two. Without that a car stood behind another could never get out.
+    /// </summary>
+    public static float AcrossSlopeAt(float speedMs) => LaneChangeSlope + 0.6f * MathF.Max(0f, 1f - speedMs / 12f);
+
+    /// <summary>
+    /// The speed to go round a car that stands still right in front. Following it would mean stopping, and
+    /// a stopped car cannot move across: so a driver who has a side to go to creeps out past it instead of
+    /// queueing behind it for good. Not while touching it.
+    /// </summary>
+    public static float PullingOutSpeed(float target, bool pullingOut, in Surroundings around)
+        => pullingOut && around.SpeedAhead < 1f && around.GapAhead is > 4.6f and < LooksAheadMeters ? MathF.Max(target, CrawlMs) : target;
+
     /// <summary>The gap a driver wants to the car in front at this speed: about a fifth of a second of it.</summary>
     public static float WantedGap(float speedMs) => 5f + 0.25f * speedMs;
 
@@ -39,7 +67,8 @@ public static class Racecraft
     /// <param name="brakeDecel">How hard this car can brake, metres a second a second.</param>
     public static float FollowingSpeed(float pace, float ownSpeed, float brakeDecel, in Surroundings around)
     {
-        if (around.GapAhead > LooksAheadMeters) return pace;
+        // Far away, or already beside it on a line of its own: nothing to slow down for.
+        if (around.GapAhead > LooksAheadMeters || MathF.Abs(around.AcrossAhead) >= BlocksAcrossMeters) return pace;
 
         var closing = ownSpeed - around.SpeedAhead;
         var toShed = closing > 0 ? closing * closing / (2f * MathF.Max(1f, brakeDecel)) : 0f;
@@ -63,7 +92,9 @@ public static class Racecraft
     /// </summary>
     public static float WantedOffset(float currentOffset, float pace, in Surroundings around)
     {
-        if (around.GapAhead > LooksAheadMeters) return 0f;
+        // Clear road: back to the line — but not across a car that is still alongside on the way back.
+        if (around.GapAhead > LooksAheadMeters)
+            return (currentOffset > 0.5f && around.RightBlocked) || (currentOffset < -0.5f && around.LeftBlocked) ? currentOffset : 0f;
         if (pace <= around.SpeedAhead + 0.5f) return currentOffset;
 
         // Already out of the way and getting on with it: hold the line being taken.

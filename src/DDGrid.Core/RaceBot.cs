@@ -17,7 +17,7 @@ public enum RacePhase
 /// </summary>
 public sealed class RaceBot
 {
-    private readonly IRaceLink _link;
+    private IRaceLink _link;
     private readonly Lane _lane;
     private readonly IReadOnlyList<TrackSlot> _grid;
     private readonly float _reactionSeconds;
@@ -40,6 +40,12 @@ public sealed class RaceBot
     }
 
     public Bot Bot { get; }
+
+    /// <summary>
+    /// The car is back on the server on a new connection, after the old one was lost. It drives on from
+    /// where it was; the server kept its slot and its laps.
+    /// </summary>
+    public void Reconnected(IRaceLink link) => _link = link;
 
     public RacePhase Phase { get; private set; } = RacePhase.Racing;
 

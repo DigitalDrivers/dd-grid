@@ -71,6 +71,16 @@ public class RacecraftTests
     }
 
     [Fact]
+    public void steers_across_more_sharply_the_slower_it_goes()
+    {
+        // At racing speed a change of lane takes a hundred metres; pulling out of a queue at walking pace
+        // takes a car length or two, or a car stood behind another could never get out.
+        Assert.Equal(0.025f, Racecraft.AcrossSlopeAt(60f), 3);
+        Assert.True(Racecraft.AcrossSlopeAt(3f) > 0.3f);
+        Assert.True(Racecraft.AcrossSlopeAt(10f) < Racecraft.AcrossSlopeAt(3f));
+    }
+
+    [Fact]
     public void pulls_out_to_the_free_side_and_holds_it_until_past()
     {
         // Coming up on someone slower with both sides free: out it goes.

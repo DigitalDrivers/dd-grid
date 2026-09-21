@@ -205,6 +205,24 @@ field):
   The lap right after a standing start is two to three seconds slower, because the car is still picking up
   speed as it crosses the line for the first time — as a real one is.
 
+What the first live bot race with a member found (2026-09-21, Nürburgring Sprint, the member at the back):
+
+- The bots never lined up: 60 s before the start they were still lapping, then queued behind the member.
+  The start time comes in the car's own clock cut to 32 bits, and was worked out in 64 bits — 49.7 days off
+  once the host had been up for 24.9 days. Worked out in 32 bits now (`RaceClient.MillisecondsUntil`).
+- A car stood behind one that does not move stayed there for good: stopped, it could not move across,
+  and a car up to 4 m across still counted as in the way while passing takes it 2.6 m out. Now a driver
+  creeps out past a stopped car and steers hard at walking pace; only a car within 2.2 m across slows it,
+  and nobody turns back onto the line across a car still alongside.
+- All bots vanished after two laps. Asking for the session once a second (§4) now and then lands in the
+  moment the server has switched sessions but not set the grid yet; AssettoServer then fails to answer
+  (`CurrentSessionUpdate` with a null `Grid`) and throws the car out. The bot kept driving on a dead
+  connection and its next lap threw a `Broken pipe` nobody caught, which ended the process. The server
+  tells every car about a new session on its own once the grid is set, so a car asks only every 30 s
+  now; a car that is thrown out anyway rejoins its slot and drives on, and one driver's error never stops
+  the others. Proven against a real server: a bot put on the blacklist mid-race was refused while
+  blacklisted and back on its slot ten seconds after it was lifted; the field raced on, 12 of 12.
+
 What Phase 0 answered along the way:
 
 - The server sends the plain position updates unless a client announces the CSP feature `CUSTOM_UPDATE`
