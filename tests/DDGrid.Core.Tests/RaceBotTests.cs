@@ -100,6 +100,28 @@ public class RaceBotTests
     }
 
     [Fact]
+    public async Task counts_the_first_lap_from_the_lights_not_from_crossing_the_line_just_after_them()
+    {
+        // The boxes stand behind the line, so a car crosses it seconds after the start. That is where its
+        // first lap begins to count, not a lap of its own: a live race reported 2-second laps, the field
+        // was classified after four real laps of five, and every best lap was one of those.
+        var lane = Straight();
+        var link = new FakeLink { SessionId = 0, Session = Race(0), MillisecondsToStart = 100 };
+        var bot = new RaceBot(link, lane, SpeedProfile.ForLapTime(lane, CarLimits.Nominal, 15f), Grid(), reactionSeconds: 0f);
+        await bot.TickAsync(0.05f);
+        link.MillisecondsToStart = -10;
+
+        for (var i = 0; i < 20 * 40 && link.Laps.Count < 2; i++) await bot.TickAsync(0.05f);
+
+        Assert.Equal(2, link.Laps.Count);
+        // Lap two is a flying lap. Lap one runs from the lights, through the run up to the line, round to the
+        // line again: a full lap and the standing start, so longer — on a kilometre that is all accelerating,
+        // a good deal longer — but nowhere near two laps.
+        Assert.InRange(link.Laps[1].Time, 14_000u, 16_000u);
+        Assert.InRange(link.Laps[0].Time, link.Laps[1].Time + 1_000, 2 * link.Laps[1].Time);
+    }
+
+    [Fact]
     public async Task takes_a_moment_to_react_and_then_pulls_away()
     {
         var lane = Straight();

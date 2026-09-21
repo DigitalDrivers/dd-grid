@@ -135,8 +135,10 @@ public class FullGridTests(Xunit.Abstractions.ITestOutputHelper output)
         Assert.DoesNotContain("kicked", server.Log);
         Assert.Equal(Cars * Laps, server.Log.Split("Lap completed by").Length - 1);
 
-        // Every full lap is the lap time the bots were set to. The first one is short: it starts on the
-        // grid, a few car lengths behind the line, exactly as a driver's does.
+        // Every flying lap is the lap time the bots were set to. The first one runs from the lights, the run
+        // up from the grid to the line included, as a driver's does: longer, and never the few seconds from
+        // the box to the line, which a live race once counted as a lap of its own.
+        Assert.All(watchers, watcher => Assert.True(watcher.Laps[0] > LapSeconds * 1000, $"a first lap of {watcher.Laps[0]} ms"));
         var full = watchers.SelectMany(w => w.Laps.Skip(1)).ToList();
         Assert.Equal(Cars * (Laps - 1), full.Count);
         Assert.All(full, lap => Assert.InRange(lap, (uint)(LapSeconds * 1000 - 250), (uint)(LapSeconds * 1000 + 250)));

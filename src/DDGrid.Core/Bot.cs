@@ -41,6 +41,8 @@ public sealed class Bot
     private readonly SpeedProfile _profile;
     private readonly uint[] _splits = new uint[3];
     private float _lapTimeSeconds;
+    /// <summary>Started from a box behind the line: crossing it next is where the first lap begins, not a lap.</summary>
+    private bool _crossingStartsTheRace;
     private float _lastSpeed;
     private readonly Random? _mistakes;
     private float _offsetTarget;
@@ -137,8 +139,18 @@ public sealed class Bot
             return null;
         }
 
-        // Over the line: the lap that just ended is worth the time it took, and the last sector with it.
         Distance = moved - _lane.Length;
+
+        // Just away from a box behind the line: the first lap has only now begun, and counts from the lights
+        // on, the run up to the line included — as the game counts a driver's.
+        if (_crossingStartsTheRace)
+        {
+            _crossingStartsTheRace = false;
+            Array.Clear(_splits);
+            return null;
+        }
+
+        // Over the line: the lap that just ended is worth the time it took, and the last sector with it.
         Laps++;
         _splits[^1] = Milliseconds(_lapTimeSeconds);
         var lap = new CompletedLap(_splits[^1], [.. _splits]);
@@ -159,6 +171,8 @@ public sealed class Bot
     public void StartFrom(float distance, float lateralOffset = 0f)
     {
         Distance = _lane.Wrap(distance);
+        // A box is behind the line when it stands in the second half of the lap.
+        _crossingStartsTheRace = Distance > _lane.Length / 2;
         Speed = 0;
         _lastSpeed = 0;
         Laps = 0;
