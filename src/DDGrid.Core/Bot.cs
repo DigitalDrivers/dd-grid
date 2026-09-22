@@ -33,6 +33,21 @@ public sealed class Bot
     /// <summary>How often a driver who makes mistakes makes one, on average.</summary>
     private const float MistakeEverySeconds = 150f;
 
+    /// <summary>
+    /// How a car sits and points, worked out from how it moves: the wheelbase turns a yaw rate into lock,
+    /// and the body leans about one and a half degrees a g out of a corner and one degree a g under power
+    /// and braking. The signs are the game's (dd-grid SPEC, "What looking at it found").
+    /// </summary>
+    private const float WheelbaseMeters = 2.45f;
+    private const float RollPerMs2 = 1.5f * MathF.PI / 180f / 9.81f;
+    private const float PitchPerMs2 = 1f * MathF.PI / 180f / 9.81f;
+    private const float MaxLean = 0.06f;
+    private const float YawSmoothingSeconds = 0.15f;
+    private const float AccelSmoothingSeconds = 0.3f;
+
+    /// <summary>How fast a car that is hit slides across to where the hit puts it, metres a second.</summary>
+    private const float PushMetersPerSecond = 4f;
+
     /// <summary>What a mistake costs while it lasts, and how long that is.</summary>
     private const float MistakeCost = 0.90f;
     private const float MistakeSeconds = 2f;
@@ -48,6 +63,13 @@ public sealed class Bot
     private float _offsetTarget;
     private float _contactCooldown;
     private float _mistakeLeft;
+    private bool _beingPushed;
+    // How the car points and how it has been moving, for State: heading, yaw rate (positive turning right)
+    // and acceleration along the road, the last two smoothed.
+    private bool _placed;
+    private float _yaw;
+    private float _yawRate;
+    private float _alongAcceleration;
 
     /// <param name="mistakeSeed">
     /// A driver who is not perfect: now and then a corner comes out wrong and costs a few tenths. Nought
@@ -89,6 +111,7 @@ public sealed class Bot
         _lastSpeed = Speed;
         _contactCooldown = MathF.Max(0f, _contactCooldown - seconds);
         var here = _lane.Sample(Distance);
+        var offsetBefore = LateralOffset;
 
         // How fast the driver wants to go: their own pace, helped by the tow, held back by the car in
         // front, and every so often spoiled by getting a corner wrong.
@@ -109,21 +132,28 @@ public sealed class Bot
         if (around.TouchedFrom != 0f && _contactCooldown <= 0f)
         {
             var closing = MathF.Max(3f, MathF.Abs(Speed - around.SpeedAhead));
-            (Speed, LateralOffset) = Racecraft.AfterContact(Speed, LateralOffset, closing, around.TouchedFrom);
-            _offsetTarget = LateralOffset;
+            (Speed, var pushedTo) = Racecraft.AfterContact(Speed, LateralOffset, closing, around.TouchedFrom);
+            // Shoved across: the car slides there over a moment instead of being put there, and the driver
+            // holds that line until it has.
+            _offsetTarget = pushedTo;
+            _beingPushed = true;
             _contactCooldown = ContactCooldownSeconds;
         }
 
         // Where across the road to be, and as much of the way there as driving this far allows.
-        _offsetTarget = Racecraft.WantedOffset(_offsetTarget, pace, around);
+        if (!_beingPushed) _offsetTarget = Racecraft.WantedOffset(_offsetTarget, pace, around);
         var room = Math.Clamp(_offsetTarget, -MathF.Max(0f, here.SideRight - EdgeMarginMeters), MathF.Max(0f, here.SideLeft - EdgeMarginMeters));
         // Round a car that stands still a driver steers hard; any other change of line is a gentle one, which
         // is also what keeps a field from snapping onto the line in single file when the lights go out.
         var aroundStoppedCar = pullingOut && around.SpeedAhead < 1f && around.GapAhead < Racecraft.LooksAheadMeters;
-        var step = (aroundStoppedCar ? Racecraft.AcrossSlopeAt(Speed) : Racecraft.LaneChangeSlope) * Speed * seconds;
+        var step = _beingPushed
+            ? PushMetersPerSecond * seconds
+            : (aroundStoppedCar ? Racecraft.AcrossSlopeAt(Speed) : Racecraft.LaneChangeSlope) * Speed * seconds;
         LateralOffset = MathF.Abs(room - LateralOffset) <= step ? room : LateralOffset + MathF.Sign(room - LateralOffset) * step;
+        if (_beingPushed && LateralOffset == room) _beingPushed = false;
 
         var moved = Distance + Speed * seconds;
+        Pose(_lane.Sample(moved), Speed * seconds, LateralOffset - offsetBefore, seconds);
         _lapTimeSeconds += seconds;
 
         // Three sectors, as the game has them: the time is taken as the car passes each line.
@@ -171,6 +201,10 @@ public sealed class Bot
     public void StartFrom(float distance, float lateralOffset = 0f)
     {
         Distance = _lane.Wrap(distance);
+        _placed = false;
+        _yawRate = 0;
+        _alongAcceleration = 0;
+        _beingPushed = false;
         // A box is behind the line when it stands in the second half of the lap.
         _crossingStartsTheRace = Distance > _lane.Length / 2;
         Speed = 0;
@@ -198,14 +232,25 @@ public sealed class Bot
             : sample.Position + Vector3.Normalize(Vector3.Cross(sample.Normal, sample.Forward)) * LateralOffset;
         position.Y += RideHeightMeters;
 
+        // The nose points where the car goes; the road gives the slope and the banking, the car's own motion
+        // the lean on top and the lock of the front wheels. The steering wheel inside stays straight: nobody
+        // sees it from outside, and the game gives no scale for it.
+        var yaw = _placed ? _yaw : CarState.Facing(sample.Forward, 0f).X;
+        var climb = sample.Forward.Y;
+        var level = MathF.Sqrt(MathF.Max(0f, 1f - climb * climb));
+        var heading = new Vector3(-MathF.Sin(yaw) * level, climb, MathF.Cos(yaw) * level);
+        var pitch = CarState.Facing(sample.Forward, 0f).Y + Math.Clamp(PitchPerMs2 * _alongAcceleration, -MaxLean, MaxLean);
+        var roll = Banking(sample) + Math.Clamp(RollPerMs2 * _yawRate * Speed, -MaxLean, MaxLean);
+        var wheelLock = MathF.Atan(WheelbaseMeters * _yawRate / MathF.Max(Speed, 1f)) * 180f / MathF.PI;
+
         return new CarState
         {
             Position = position,
-            Rotation = CarState.Facing(sample.Forward, 0f),
-            Velocity = sample.Forward * Speed,
+            Rotation = new Vector3(yaw, pitch, roll),
+            Velocity = heading * Speed,
             TyreAngularSpeed = CarState.WheelSpeed(Speed, TyreDiameterMeters),
             SteerAngle = 127,
-            WheelAngle = 127,
+            WheelAngle = CarState.EncodeWheelAngle(wheelLock),
             EngineRpm = (ushort)(IdleRpm + (MaxRpm - IdleRpm) * Math.Clamp(inGear, 0f, 1f)),
             Gear = (byte)(gear + 1), // the game counts reverse as 0 and neutral as 1
             Status = CarStatus.HighBeamsOff | (slowing ? CarStatus.BrakeLightsOn : 0),
@@ -215,6 +260,41 @@ public sealed class Bot
     }
 
     /// <summary>Puts the car on its grid box, facing the way the box does, standing still.</summary>
+    /// <summary>
+    /// Works out how the car points and moves after a step of <paramref name="along"/> metres down the road
+    /// and <paramref name="across"/> metres across it. Moving across turns the nose with it, so a car
+    /// changing line points where it goes instead of sliding sideways with its nose along the line; moving
+    /// to the left (a growing offset) is a smaller heading, the game's headings growing to the right.
+    /// </summary>
+    private void Pose(in LaneSample sample, float along, float across, float seconds)
+    {
+        var slip = along > 0.05f ? Math.Clamp(MathF.Atan2(across, along), -0.6f, 0.6f) : 0f;
+        var yaw = CarState.Facing(sample.Forward, 0f).X - slip;
+        var turned = _placed ? Unwind(yaw - _yaw) : 0f;
+        _yawRate = Smooth(_yawRate, turned / seconds, seconds, YawSmoothingSeconds);
+        _alongAcceleration = Smooth(_alongAcceleration, (Speed - _lastSpeed) / seconds, seconds, AccelSmoothingSeconds);
+        _yaw = yaw;
+        _placed = true;
+    }
+
+    /// <summary>How far the road leans, positive with its left side lower: the lean the game rolls a car left by.</summary>
+    private static float Banking(in LaneSample sample)
+    {
+        var left = Vector3.Cross(Vector3.UnitY, sample.Forward);
+        if (left.LengthSquared() < 1e-6f) return 0f;
+        return MathF.Asin(Math.Clamp(Vector3.Dot(sample.Normal, Vector3.Normalize(left)), -1f, 1f));
+    }
+
+    private static float Smooth(float value, float target, float seconds, float timeConstant)
+        => value + (target - value) * (seconds / (timeConstant + seconds));
+
+    private static float Unwind(float angle)
+    {
+        while (angle > MathF.PI) angle -= 2 * MathF.PI;
+        while (angle < -MathF.PI) angle += 2 * MathF.PI;
+        return angle;
+    }
+
     public static CarState OnGrid(TrackSlot box) =>
         CarState.Still(box.Position with { Y = box.Position.Y + RideHeightMeters },
             CarState.Facing(new Vector3(MathF.Sin(box.HeadingRad), 0, MathF.Cos(box.HeadingRad)), 0f));

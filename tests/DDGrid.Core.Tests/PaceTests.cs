@@ -74,18 +74,23 @@ public class PaceTests
         var contact = new Surroundings(3f, 20f, false, false, 1f);
 
         var pushedTo = 0f;
+        var widestStep = 0f;
         for (var step = 0; step < 100; step++)
         {
             clean.Advance(0.05f);
+            var before = hit.LateralOffset;
             hit.Advance(0.05f, step == 10 ? contact : Surroundings.Clear);
-            if (step == 11) pushedTo = hit.LateralOffset;
+            widestStep = MathF.Max(widestStep, MathF.Abs(hit.LateralOffset - before));
+            if (step is > 10 and < 30) pushedTo = MathF.Max(pushedTo, MathF.Abs(hit.LateralOffset));
         }
 
         // On this oval that is about four tenths of a second, which is what a shove costs.
         Assert.True(hit.Distance < clean.Distance - 3f, $"only {clean.Distance - hit.Distance:F1} m behind");
-        // Shoved across at the moment of contact, and back on the line by the end of it.
-        Assert.True(MathF.Abs(pushedTo) > 0.5f, $"only pushed to {pushedTo:F2} m");
+        // Shoved across within a moment of the contact, and back on the line by the end of it.
+        Assert.True(pushedTo > 0.5f, $"only pushed to {pushedTo:F2} m");
         Assert.Equal(0f, hit.LateralOffset, 0.1f);
+        // Slid across rather than put there: no step of a twentieth of a second jumps more than a car could slide.
+        Assert.True(widestStep <= 4f * 0.05f + 0.001f, $"jumped {widestStep:F2} m in one step");
     }
 
     [Fact]

@@ -50,6 +50,13 @@ public struct CarState
         camber);
 
     /// <summary>
+    /// The front wheels' lock, in the byte the game sends: half degrees either side of 127, above it to the
+    /// right. Read off the game by showing a parked car known values and looking at its wheels from the front
+    /// (+100 is about 45 degrees to the right). No car locks further than 35 degrees.
+    /// </summary>
+    public static byte EncodeWheelAngle(float degreesRight) => (byte)(127 + Math.Clamp(MathF.Round(degreesRight * 2f), -70f, 70f));
+
+    /// <summary>
     /// How fast the wheels turn, in the byte the game sends: turns a second times six, on a logarithmic
     /// scale so that walking pace and full speed both fit.
     /// </summary>

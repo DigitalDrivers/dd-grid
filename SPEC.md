@@ -191,6 +191,20 @@ Waiting in the pit box before going out is not built either. A bot that joins si
 | 3 **done** | Platform: columns, preset, sidecar, XP, UI. | The preset writes the bot slots and dd-grid's own config; race control starts dd-grid beside the server only for a race that asks for it; a race with a bot grid books XP for its members and never becomes an official result; the event page and the timing say which drivers are simulated. |
 | 4 | Tuning against real members on a real track. | A live test race with members. |
 
+What looking at it found (2026-09-22, a car parked in front of a real client and sent known values, a
+screenshot of each). The cars looked like models on rails: the front wheels never steered, the body never
+leaned, and a car changing line slid sideways with its nose along the line. What the game makes of the values:
+
+- `WheelAngle` is the lock of the front wheels in half degrees either side of 127, above it to the right:
+  +100 is about 45 degrees, seen from in front of the car. `SteerAngle` moves only the steering wheel inside;
+  it stays at 127, nobody sees it from outside and the game gives no scale for it.
+- The rotation is heading, pitch, roll. A growing heading turns the car to the right; a positive pitch lifts
+  the nose; a positive roll lowers the left side, the lean of a right-hand corner.
+- So a bot now points where it goes (the line's heading, turned by as much as it moves across), steers by
+  the yaw rate over a 2.45 m wheelbase, leans 1.5 degrees a g out of a corner and 1 degree a g under power
+  and braking, takes the banking and the slope of the road from the line, and slides across at 4 m/s when
+  it is hit instead of jumping there.
+
 What looking at it in the game found (2026-09-20, eight bots on the Nürburgring GP, a real client in the
 field):
 
